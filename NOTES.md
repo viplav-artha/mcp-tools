@@ -150,7 +150,15 @@ chat and in CLAUDE.md, not here).
   their import-time registration side effect (unused otherwise, same
   `# noqa: F401` pattern as the companion repo). Imports `mcp` from
   `server.py`. Inside `if __name__ == "__main__":`, reads `HOST`/`PORT` from
-  the environment (defaults `0.0.0.0`/`8100`) and calls
-  `mcp.run(transport="streamable-http", host=host, port=port)`. Verified live:
-  starts Uvicorn, serves the MCP endpoint at `/mcp`, shuts down cleanly on
-  termination.
+  the environment (defaults `0.0.0.0`/`8100`). Originally called the
+  convenience `mcp.run(transport="streamable-http", host=host, port=port)`;
+  revised to build the Starlette app explicitly via
+  `mcp.streamable_http_app()`, attach `CORSMiddleware` via
+  `app.add_middleware(...)`, and run it with `uvicorn.run(app, host=,
+  port=)`. `allow_origins` reads from a new `CORS_ALLOWED_ORIGINS` env var
+  (comma-separated, defaults to `http://localhost:8080`) rather than a
+  wildcard, so only the actual Open WebUI origin is trusted — swap this env
+  var for the real deployed domain later, never leave it as `*`. Verified
+  live: CORS preflight from the allowed origin gets
+  `access-control-allow-origin` echoed back; a different origin gets no such
+  header and a 400.

@@ -21,6 +21,7 @@ ENV/
 .env.*
 !.env.example
 !.env.sample
+.webui_secrets_key
 
 # Testing / coverage
 .pytest_cache/
@@ -51,3 +52,9 @@ Thumbs.db
 
 # Local reference clone of the other repo (viplav-artha/tools) — not part of this project
 reference-tools-repo/
+openwebui-venv/
+
+# Open WebUI runtime state (secret key, local sqlite db, uploads) — not part of this project
+.webui_secret_key
+data/
+webui.db

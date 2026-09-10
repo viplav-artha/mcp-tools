@@ -92,6 +92,94 @@ this):**
   - If this stops working (`mcp-remote` version drift is common), re-search
     current Claude Desktop + local-HTTP-MCP guidance rather than assuming
     this is still the right bridge.
+- **Open WebUI** (switched to this instead of Claude Desktop, per user
+  preference): natively supports MCP over Streamable HTTP directly — no
+  bridge needed, unlike Desktop. Configured via Settings → Admin →
+  Integrations → External Tool Servers → "+ Add Connection", Type "MCP
+  (Streamable HTTP)", URL `http://127.0.0.1:8100/mcp` (plain localhost works
+  since Open WebUI is running natively here, not in Docker — if it were
+  Dockerized, `host.docker.internal` would be required instead), Auth
+  "None". Only admins can add MCP servers.
+  - Installed via `pip install open-webui` into a **separate** venv
+    (`openwebui-venv/`, gitignored) — NOT this project's own `.venv` — because
+    `open-webui` requires Python `>=3.11,<3.13`, and this project's `.venv`
+    is Python 3.14 (installed via `python3.12 -m venv openwebui-venv`).
+    `open-webui` is a standalone application being used as a test client
+    here, not a dependency of the MCP server itself.
+  - Run with: `source openwebui-venv/bin/activate && open-webui serve`
+    (defaults to port 8080). First run does DB migrations + likely model
+    downloads, taking a couple minutes.
+  - Creates runtime files in the project root on first run
+    (`.webui_secret_key`, a `data/` dir with its sqlite db) — added to
+    `.gitignore`, since these are Open WebUI's own state, not this project's.
+  - **SSL gotcha (macOS Python 3.12 from `/usr/local/bin/python3.12`)**:
+    outbound HTTPS calls (to OpenRouter, OpenAI, etc.) failed with
+    `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate` —
+    this Python build doesn't use the macOS system trust store. Fixed by
+    pointing it at `certifi`'s bundle before launching:
+    `export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")`
+    (also set `REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE` to the same path) then
+    `open-webui serve`. Not an Open WebUI or OpenRouter config problem —
+    this will need to be re-set every time `open-webui serve` is started
+    fresh in a new shell, since env vars don't persist.
+  - **Two separate "Add Connection" surfaces exist and only one supports
+    MCP**: Settings → Personal → Services → Integrations (gear icon) passes
+    `direct` mode to the modal, which hard-disables the Type toggle
+    (OpenAPI-only, not clickable, by design — regular/personal users can't
+    register MCP servers). The real one is the **Admin Panel** (via
+    profile icon → "Admin Panel" → Settings → Integrations) — that page's
+    modal has a working Type toggle. Model *connections* (OpenRouter, etc.)
+    are separate again: Admin Panel → Settings → Connections.
+  - Model list for the OpenRouter connection: leaving "Model IDs" empty is
+    supposed to pull the whole catalog — this depends on the SSL fix above
+    working; a connection can look "saved" fine while its model fetch
+    silently fails in the background (only visible in the server log, not
+    the UI) and the chat model dropdown shows "No models available".
+  - **CORS gotcha — real fix applied to `main.py`**: chat showed "Failed to
+    connect to MCP server 'tools'" with ZERO trace of it in Open WebUI's own
+    backend log (`grep -i mcp` on the log came back empty). Conclusion:
+    Open WebUI's browser frontend connects to the MCP server URL directly
+    via `fetch()` from the page, not proxied through its Python backend —
+    so the browser enforces CORS itself, and our server sent no
+    `Access-Control-Allow-Origin` header, so the browser silently blocked
+    the response. Confirmed by reading `mcp`'s own
+    `transport_security.py` source: DNS-rebinding Host/Origin validation
+    defaults to *disabled* when unconfigured (so that wasn't it) — this is
+    a separate, plain browser CORS issue. Fixed by rewriting `main.py` to
+    build the Starlette app via `mcp.streamable_http_app()` instead of the
+    convenience `mcp.run(...)`, then
+    `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])`
+    before `uvicorn.run(app, host=host, port=port)`. Only needed because a
+    browser-based client (Open WebUI) is involved — Claude Code (a CLI, not
+    a browser) never hit this. **Revised again** (user explicitly didn't
+    want `allow_origins=["*"]`, wildcard was only ever a quick test):
+    `allow_origins` now comes from a new `CORS_ALLOWED_ORIGINS` env var
+    (comma-separated, defaults to `http://localhost:8080`, the local Open
+    WebUI dev origin) — added to `.env.example`. Update this env var to the
+    real Open WebUI domain once deployed; never leave it as `*` once this
+    server is reachable outside localhost. Verified via curl: the allowed
+    origin gets `access-control-allow-origin` echoed back, a disallowed one
+    (`example.com`) gets no such header (blocked) and a 400.
+  - **Root cause of the actual "Failed to connect to MCP server 'tools'"
+    error (found by reading Open WebUI's own installed source, not CORS)**:
+    the connection's stored URL in Open WebUI's config DB had a **leading
+    space** — `" http://127.0.0.1:8100/mcp"` — from a typing/paste artifact
+    in the Admin UI form. `httpx` (which Open WebUI's `MCPClient` uses
+    internally, via `mcp.utils.client.MCPClient.connect()`) raises
+    `UnsupportedProtocol` on that, and the exception is only ever logged at
+    **DEBUG** level (`log.debug(e)` in `open_webui/utils/middleware.py`,
+    `connect_mcp_server`/its caller) — never visible in a normal server log,
+    which is why grepping both logs for "mcp" found nothing. Reproduced
+    exactly by calling Open WebUI's own installed `MCPClient` directly in a
+    Python one-liner with that same leading-space URL. Fixed by re-entering
+    the URL cleanly in the Admin UI (clear the field first, don't just edit
+    around the existing text). Lesson for next time this kind of error
+    shows up: read the actual installed backend source
+    (`openwebui-venv/lib/python3.12/site-packages/open_webui/...`) rather
+    than guessing from generic web search results — this package is a full
+    Python app, not black-box SaaS, and its logging setup (Python stdlib
+    `logging` at DEBUG, separate from its own `loguru`-based request logs)
+    hides real errors by default.
 
 ## Planned build order
 1. Project init (repo, `.gitignore`, `README.md`, `.venv`, `requirements.txt`) — **DONE**
