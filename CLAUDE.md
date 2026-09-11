@@ -181,6 +181,40 @@ this):**
     `logging` at DEBUG, separate from its own `loguru`-based request logs)
     hides real errors by default.
 
+## Deploying/testing on another machine (e.g. a Multipass VM)
+- Tested by cloning this same GitHub repo into a Multipass Ubuntu VM,
+  creating a venv, `pip install -r requirements.txt`, `python main.py`.
+  Multipass VMs get their own routable IP reachable directly from the host
+  (`multipass list` shows it) — no port forwarding needed, unlike NAT-mode
+  VM tools.
+- **Found and fixed a real gap**: hitting the VM's IP from the host
+  (`curl http://<vm-ip>:8100/mcp`) returned `421 Misdirected Request /
+  Invalid Host header`. Root cause: MCP's built-in DNS-rebinding protection
+  (`TransportSecurityMiddleware`) checks the incoming `Host` header against
+  an allowed list. `mcp.run(...)` auto-disables this for backward
+  compatibility when unconfigured, but our `main.py` bypasses `mcp.run()`
+  (to attach CORS middleware) and calls `mcp.streamable_http_app()`
+  directly — that path does NOT get the same auto-disable, so it was
+  actively rejecting any `Host` header it didn't already know about (i.e.
+  anything other than `localhost`/`127.0.0.1`).
+  - **Fix applied**: `main.py` now imports
+    `from mcp.server.transport_security import TransportSecuritySettings`
+    and passes
+    `mcp.streamable_http_app(transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))`.
+    Verified locally: a request with a fake `Host` header went from `421`
+    to the normal `400` (same as a legitimate request missing a session
+    ID) after this change.
+  - **Honest tradeoff**: this deliberately disables a real security
+    protection (DNS rebinding defense), consistent with this project's
+    existing "no auth/security hardening" known gap — acceptable for a
+    local learning/demo server, NOT something to carry into a real
+    deployment without reconsidering (a production version would instead
+    configure `allowed_hosts`/`allowed_origins` explicitly rather than
+    disabling the check entirely).
+  - To reproduce/test on a VM again: `git pull` inside the VM, restart
+    `main.py`, then `curl http://<vm-ip>:8100/mcp` from the host — expect
+    `400` (not `421`).
+
 ## Planned build order
 1. Project init (repo, `.gitignore`, `README.md`, `.venv`, `requirements.txt`) — **DONE**
 2. `server.py` — `mcp = FastMCP("tools")`, the shared server instance (successor to
@@ -242,7 +276,11 @@ numbered, per the usual convention.)
 ## Known gaps / deliberately deferred (be honest, don't hide these)
 - No tests yet.
 - No auth/security hardening on the Streamable HTTP server yet — first pass is
-  about seeing MCP mechanics work, not production hardening.
+  about seeing MCP mechanics work, not production hardening. This now
+  explicitly includes MCP's own DNS-rebinding `Host` header protection,
+  deliberately disabled in `main.py` (see "Deploying/testing on another
+  machine" below) so the server accepts requests addressed to any
+  host/IP — fine for a local/VM demo, not for a real internet-facing deploy.
 - No license chosen yet for the public repo (README has a TODO for this).
 - **RESOLVED, kept for reference**: SDK used `mcp.server.fastmcp.FastMCP` (v1
   naming) in initial `server.py` draft; the actually-installed `mcp==2.2.0` is

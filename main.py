@@ -2,6 +2,7 @@ import os
 
 import uvicorn
 from dotenv import load_dotenv
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.cors import CORSMiddleware
 
 from server import mcp
@@ -20,7 +21,9 @@ if __name__ == "__main__":
         if origin.strip()
     ]
 
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,

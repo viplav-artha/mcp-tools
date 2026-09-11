@@ -162,3 +162,15 @@ chat and in CLAUDE.md, not here).
   live: CORS preflight from the allowed origin gets
   `access-control-allow-origin` echoed back; a different origin gets no such
   header and a 400.
+  Revised again: testing from a separate machine (a Multipass VM, hitting
+  the VM's IP from the host) surfaced `421 Misdirected Request / Invalid
+  Host header`. Cause: MCP's DNS-rebinding `Host` header check
+  (`TransportSecurityMiddleware`) — `mcp.run()` auto-disables this for
+  backward compatibility, but `mcp.streamable_http_app()` does not. Fixed
+  by importing `TransportSecuritySettings` from
+  `mcp.server.transport_security` and passing
+  `mcp.streamable_http_app(transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))`.
+  A deliberate tradeoff (disables a real protection, acceptable only for
+  this local/demo server) — see `CLAUDE.md` Known gaps. Verified: a
+  request with a foreign `Host` header went from `421` to the normal `400`
+  after this change.
