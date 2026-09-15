@@ -7,7 +7,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from server import mcp
 import tools.get_current_time  # noqa: F401 (registers get_current_time)
-import tools.web_search  # noqa: F401 (registers web_search)
+import tools.web_search  # noqa: F401 (registers custom_web_search)
 
 load_dotenv()
 
@@ -30,4 +30,7 @@ if __name__ == "__main__":
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    uvicorn.run(app, host=host, port=port)
+
+    tls_cert = os.getenv("TLS_CERT_FILE")
+    tls_key = os.getenv("TLS_KEY_FILE")
+    uvicorn.run(app, host=host, port=port, ssl_certfile=tls_cert, ssl_keyfile=tls_key)
