@@ -57,7 +57,9 @@ async def _search_duckduckgo(query: str) -> str:
 
 
 @mcp.tool()
-async def web_search(query: str, provider: Literal["duckduckgo", "tavily"] = "duckduckgo") -> str:
+async def custom_web_search(
+    query: str, provider: Literal["duckduckgo", "tavily"] = "duckduckgo"
+) -> str:
     """Search the web for current information on a topic.
 
     Returns a short list of relevant results with titles, URLs, and content

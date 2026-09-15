@@ -181,6 +181,46 @@ this):**
     `logging` at DEBUG, separate from its own `loguru`-based request logs)
     hides real errors by default.
 
+## Connecting this server to a NemoClaw sandbox (managed MCP)
+- NemoClaw's `nemoclaw <sandbox> mcp add` hard-requires an `https://` URL
+  (source-verified: it rejects any non-`https:` scheme outright, regardless
+  of `--trusted-private-host`, which only covers trusting a private/RFC1918
+  IP address — a separate concern from the TLS requirement).
+- Chose a self-signed cert over a public tunnel (e.g. Cloudflare) to avoid
+  exposing this unauthenticated learning server to the public internet.
+- `main.py` now reads optional `TLS_CERT_FILE` / `TLS_KEY_FILE` env vars and
+  passes them to `uvicorn.run(..., ssl_certfile=, ssl_keyfile=)`. Both unset
+  (the default) keeps serving plain HTTP, unaffected — this is additive, not
+  a breaking change to the existing local Claude Code / Open WebUI setup.
+- Cert generated with `openssl req -x509 -newkey rsa:2048 ... -subj
+  "/CN=172.18.0.1" -addext "subjectAltName=IP:172.18.0.1,IP:127.0.0.1,
+  DNS:localhost"` — `172.18.0.1` is the Docker bridge gateway address the
+  NemoClaw sandbox container uses to reach the host (not `127.0.0.1`, which
+  inside a container means the container itself).
+- The public cert (`cert.pem`) gets handed to NemoClaw via
+  `NEMOCLAW_CORPORATE_CA_BUNDLE=<path-to-cert.pem>` at onboarding time — a
+  real, source-verified NemoClaw mechanism (built for corporate MITM-proxy
+  CAs, reused here for a self-signed cert) that bakes trust for that exact
+  certificate into the sandbox's image. The private key (`key.pem`) is never
+  shared with NemoClaw and must never be committed.
+- `cert.pem`/`key.pem` live in this repo's root but are git-ignored (private
+  key must never be committed; the cert itself is also excluded since it's
+  environment-specific, tied to one VM's gateway IP).
+- Even with the MCP connection fully working (verified live via `mcporter
+  call` returning a real result), OpenClaw's agent still refused to use the
+  tool when asked to "use the web_search tool" — it kept reporting
+  "web_search tool disabled/no provider available". Root cause: OpenClaw has
+  its own **built-in** `web_search` concept tied to its native Brave/Tavily
+  integration (disabled since that NemoClaw sandbox skipped web search
+  onboarding), and it was intercepting the request before the agent ever
+  searched its tool catalog for our MCP-provided tool of the same name — a
+  plain naming collision, not an MCP/TLS/connection problem.
+  - **Fix**: renamed the tool from `web_search` to `custom_web_search`
+    (`tools/web_search.py` — the exposed MCP tool name comes directly from
+    the Python function name via `@mcp.tool()`, so renaming the function was
+    the entire fix). File kept its original name for minimal diff; only the
+    function/tool identifier changed.
+
 ## Deploying/testing on another machine (e.g. a Multipass VM)
 - Tested by cloning this same GitHub repo into a Multipass Ubuntu VM,
   creating a venv, `pip install -r requirements.txt`, `python main.py`.

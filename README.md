@@ -17,8 +17,11 @@ project, not production-intent — see [Known gaps](#known-gaps) below.
 
 - **`get_current_time(timezone: str = "UTC")`** — current date/time in a given IANA timezone
   (stdlib `zoneinfo`, no external API, no key needed).
-- **`web_search(query: str, provider: "duckduckgo" | "tavily" = "duckduckgo")`** — web search.
-  `duckduckgo` (default) is free and needs no key; `tavily` is paid and needs `TAVILY_API_KEY`.
+- **`custom_web_search(query: str, provider: "duckduckgo" | "tavily" = "duckduckgo")`** — web
+  search. `duckduckgo` (default) is free and needs no key; `tavily` is paid and needs
+  `TAVILY_API_KEY`. Named `custom_web_search` rather than `web_search` to avoid colliding with
+  OpenClaw's own built-in `web_search` concept when connected as a NemoClaw-managed MCP server —
+  see "Connecting this server to a NemoClaw sandbox" in `CLAUDE.md`.
 
 ## Getting Started
 

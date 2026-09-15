@@ -23,6 +23,12 @@ ENV/
 !.env.sample
 .webui_secrets_key
 
+# TLS private key and self-signed cert (environment-specific, generated
+# locally for connecting this server to a NemoClaw sandbox) — never commit
+*.pem
+*.key
+*.crt
+
 # Testing / coverage
 .pytest_cache/
 .tox/
