@@ -9,9 +9,10 @@ tool-calling across clients.
 
 ## Status
 
-Runnable end-to-end: the server starts, exposes two tools (`get_current_time`, `web_search`), and
-has been verified live against both Claude Code and Open WebUI as clients. Still a learning
-project, not production-intent — see [Known gaps](#known-gaps) below.
+Runnable end-to-end: the server starts, exposes three tools (`get_current_time`,
+`custom_web_search`, `text_to_sql`), and has been verified live against both Claude Code and Open
+WebUI as clients. Still a learning project, not production-intent — see
+[Known gaps](#known-gaps) below.
 
 ## Tools exposed
 
@@ -22,6 +23,13 @@ project, not production-intent — see [Known gaps](#known-gaps) below.
   `TAVILY_API_KEY`. Named `custom_web_search` rather than `web_search` to avoid colliding with
   OpenClaw's own built-in `web_search` concept when connected as a NemoClaw-managed MCP server —
   see "Connecting this server to a NemoClaw sandbox" in `CLAUDE.md`.
+- **`text_to_sql(question: str)`** — answers a natural-language financial question (currently
+  scoped to Futwork's data) by generating and executing real SQL, wrapping
+  [rag-text-to-sql](https://github.com/viplav-artha/rag-text-to-sql)'s (`tool` branch)
+  `run_query`, consumed as a git submodule + editable local dependency — see "Setting up `text_to_sql`"
+  below for the extra infrastructure this one needs (unlike the other two tools, which need
+  nothing or one optional key). Always runs fresh against the live database — no caching, no
+  Redis needed to actually run.
 
 ## Getting Started
 
@@ -34,12 +42,16 @@ project, not production-intent — see [Known gaps](#known-gaps) below.
 ### 1. Clone and set up the environment
 
 ```bash
-git clone https://github.com/viplav-artha/mcp-tools.git
+git clone --recurse-submodules https://github.com/viplav-artha/mcp-tools.git
 cd mcp-tools
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+`--recurse-submodules` fetches `rag-text-to-sql/` (needed by `text_to_sql`) automatically — see
+"Setting up `text_to_sql`" below. Forgot the flag on a clone you already made? Run
+`git submodule update --init` instead of re-cloning.
 
 ### 2. Configure environment variables
 
@@ -65,6 +77,37 @@ python main.py
 This starts a Streamable HTTP MCP server at `http://<HOST>:<PORT>/mcp` (default
 `http://0.0.0.0:8100/mcp`). You'll see Uvicorn's startup log; leave this running in its own
 terminal.
+
+### Setting up `text_to_sql` (optional — the other two tools work without this)
+
+This tool wraps a separate, production-intent repo as a real dependency rather than duplicating
+its logic. It's tracked as a **git submodule** (see `.gitmodules`) — a committed pointer to that
+repo's exact commit, not a copy of its files, so the two repos' histories stay separate. Extra
+setup, one-time:
+
+1. If you didn't clone this repo with `--recurse-submodules` (step 1 above), fetch it now:
+   ```bash
+   git submodule update --init
+   ```
+2. Install it as an editable dependency (already listed in `requirements.txt` as
+   `-e ./rag-text-to-sql`, so a plain `pip install -r requirements.txt` picks it up once step 1 is
+   done):
+   ```bash
+   pip install -e ./rag-text-to-sql
+   ```
+3. Fill in the Neon/AWS Bedrock variables in `.env` (see `.env.example`) — this tool needs real
+   infrastructure, unlike the other two. No Redis needed — caching was removed from
+   `rag-text-to-sql` entirely, so `text_to_sql`'s `run_query` call never touches it.
+4. Populate the local RAG knowledge store (`rag_store.db`, created in this project's root) — copy
+   an already-ingested one if you have it, or run the ingestion script fresh:
+   ```bash
+   cd rag-text-to-sql && python -m scripts.ingest_knowledge && cd ..
+   ```
+   An empty/missing store doesn't error — it silently produces wrong SQL (no schema context to
+   ground the LLM), so verify row counts if a query's answer looks off:
+   ```bash
+   sqlite3 rag_store.db "SELECT (SELECT count(*) FROM schema_chunks), (SELECT count(*) FROM few_shot_examples), (SELECT count(*) FROM company_profiles);"
+   ```
 
 ## Connecting a client
 
@@ -128,6 +171,13 @@ window alone doesn't reload it).
 - No tests yet.
 - No auth/security hardening beyond CORS — this is a learning project, not a production server.
 - No license chosen yet.
+- `text_to_sql` pulls in a genuinely heavy dependency stack (`torch`, `sentence-transformers`,
+  `langgraph`, `sqlalchemy`, `psycopg`, `redis`) via its editable dependency — a big jump from the
+  other two tools' near-zero footprint, worth knowing before installing on a constrained machine.
+- `rag_store.db` (the local RAG knowledge store `text_to_sql` depends on) is plain environment
+  data, not shared or backed up anywhere — a fresh clone/environment needs it copied in or
+  re-ingested (see "Setting up `text_to_sql`" above), and a missing/empty one fails silently with
+  a wrong-looking answer rather than an error.
 
 ## License
 

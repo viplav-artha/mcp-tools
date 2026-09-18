@@ -57,9 +57,12 @@ build) still describes the v1 `FastMCP` name — docs lag behind the SDK.
 `server.py` was corrected to use `MCPServer` (see "Files created so far").
 Concepts are identical; only the import path and class name changed, plus
 transport args (`host`/`port`) moved from the constructor onto `run()`.
-**NEXT: connect a real client and verify tool calls work live.** Server is
-running locally in the background (`python main.py`, port 8100) — restart it
-with `source .venv/bin/activate && python main.py` if it's not still up.
+Client verification (build order item 6) is **DONE** — verified live via
+Claude Code, Open WebUI, and MCP Inspector CLI (including from a separate
+Multipass VM over the network). A third tool, `text_to_sql`, has since been
+added — see the dedicated section below. Server may not currently be
+running; restart with `source .venv/bin/activate && python main.py` if
+`curl http://127.0.0.1:8100/mcp` doesn't respond.
 
 **Client-connection findings (relevant to any future session working on
 this):**
@@ -255,6 +258,174 @@ this):**
     `main.py`, then `curl http://<vm-ip>:8100/mcp` from the host — expect
     `400` (not `421`).
 
+## Adding `text_to_sql` (wrapping rag-text-to-sql as a package)
+- Wraps [viplav-artha/rag-text-to-sql](https://github.com/viplav-artha/rag-text-to-sql)'s
+  `tool` branch — a separate, production-intent RAG text-to-SQL system
+  (LangGraph pipeline: detect company → retrieve RAG context → generate SQL
+  → validate → execute → format), currently scoped to one company's
+  (Futwork) financial data. Public interface (current, as of the Redis
+  removal documented below): `run_query(question)` in
+  `app/services/query_service.py` — no longer takes `company` (the
+  pipeline auto-detects it from the question) and no longer offers a
+  separate cached/uncached variant (there was briefly a `run_query`/
+  `run_query_no_cache` pair; collapsed back to one function when caching
+  was removed upstream).
+- **Chosen approach: consume it as a real installed dependency, not a
+  `sys.path` hack.** That repo has no packaging metadata of its own (no
+  `pyproject.toml`/`setup.py` — just a plain `app/` directory meant to be
+  run via `uvicorn app.main:app`). Added a minimal `pyproject.toml` to the
+  cloned copy (one new file, nothing existing touched — their own
+  `uvicorn` workflow is unaffected) with an explicit `[tool.setuptools]
+  packages = [...]` list (`app`, its four subpackages, `data`,
+  `data.companies`) — setuptools' auto-discovery refused to guess among the
+  repo's several top-level `__init__.py`-marked folders (`app`, `data`,
+  `evals`, `scripts`) without this. `data`/`data.companies` had to be
+  included too, not just `app`, since `nodes.py` does `from data.companies
+  import futwork` as part of the real call path. Then
+  `pip install -e ./rag-text-to-sql` into this project's own `.venv`.
+  Verified: `from app.services.query_service import run_query_no_cache`
+  imports cleanly from `mcp-tools`, no `sys.path` manipulation anywhere.
+- The repo itself is cloned as a sibling directory (`rag-text-to-sql/`,
+  same convention as `reference-tools-repo/`) — git-ignored, not vendored
+  into this repo's own history, since it's a separate project with its own
+  GitHub repo. `requirements.txt` records the dependency as `-e
+  ./rag-text-to-sql` (a plain relative path) — **not** the
+  `-e git+https://github.com/...@<commit>` form `pip freeze` produced
+  automatically (since the local clone has a GitHub remote configured):
+  that git-URL form would make a fresh `pip install -r requirements.txt`
+  elsewhere re-clone into pip's own `src/` directory instead of reusing
+  the copy actually set up here — surprising, so rewritten to the simple
+  relative path deliberately.
+- Dependencies actually needed for the `run_query*` call path only (traced
+  by reading real top-of-file imports across `query_service.py` →
+  `graph.py` → `nodes.py`/`execute_node.py` → `cache.py`/`db.py`/`llm.py`/
+  `embeddings.py`): `langgraph`, `langchain-aws`, `langchain-huggingface`
+  (pulls in `sentence-transformers`/`torch`), `sqlalchemy`, `psycopg[binary]`,
+  `redis`, `python-dotenv`. Deliberately did NOT include `fastapi`/
+  `uvicorn`/`langsmith` — confirmed those are only imported by that repo's
+  own `app/main.py`/`app/api/*`/`evals/*`, never on the path we actually
+  import. This is still a big, honest jump in dependency footprint from
+  this project's previous near-zero one (`torch` alone is 100MB+).
+- `tools/text_to_sql.py`: `@mcp.tool()` on `async def text_to_sql(question:
+  str) -> str`. `run_query_no_cache` is synchronous, blocking (real LLM +
+  DB calls) — wrapped in `asyncio.to_thread(...)`, same pattern as
+  `web_search`'s DuckDuckGo wrapper. **Revised, per explicit user
+  request**: originally also exposed `run_query` (Redis-cached) behind a
+  `use_cache: bool = True` parameter mirroring `web_search`'s
+  cost-aware-`provider` pattern; removed entirely — this tool now always
+  calls `run_query_no_cache` only, no caching, since the user decided
+  Redis wasn't worth requiring. Raises `ValueError` on any of the three
+  domain-specific error fields the pipeline itself returns
+  (`company_detection_error`/`validation_error`/`execution_error`); any
+  other exception (e.g. a real DB/Bedrock connection failure) propagates
+  naturally, same as `web_search` never wrapping raw `httpx`/`ddgs`
+  exceptions either.
+- **Real infrastructure required at call time** (a first for a tool in this
+  project — the other two need nothing or one optional key): AWS Bedrock
+  (`AWS_PROFILE`/`BEDROCK_CHAT_MODEL_ID`/`AWS_REGION`), Neon Postgres
+  (`DATABASE_URL`, the real financial data table), and a populated local
+  SQLite RAG knowledge store (`rag_store.db`, auto-created-but-empty by
+  default — their own project's `CLAUDE.md` already documents that an
+  empty store doesn't error, it silently produces wrong SQL from an
+  ungrounded LLM guess). All added to `.env.example` as placeholders (real
+  values already present in this project's own `.env` — reused directly,
+  no separate credential setup needed since `load_dotenv()` finds them
+  from cwd).
+  - **`REDIS_URL` still needs to be *set* to something** (superseded — see
+    the upstream-Redis-removal entry further below; kept for history):
+    at the time, no Redis server needed to actually run, but
+    `rag-text-to-sql`'s `get_settings()` validated `REDIS_URL` was present
+    (raised if missing) as part of a combined check alongside
+    `DATABASE_URL`, regardless of whether anything ever calls a Redis
+    command. Confirmed by reading `cache.py`: `get_redis_client()` only
+    *constructs* a `redis.Redis` client object (lazy, no real connection
+    attempt) — a real TCP connection is only attempted inside
+    `cache_get`/`cache_set`, neither of which `run_query_no_cache` ever
+    calls. **Now fully moot**: after the Redis removal, `config.py` no
+    longer reads or validates `REDIS_URL` at all — `.env`/`.env.example`
+    no longer need it set to anything. Verified for real (before the
+    removal, kept for history): stopped the
+    `rag-redis` Docker container entirely, called `text_to_sql` with a
+    fresh (never-asked-before) question, still got a correct live answer.
+- **Updating the editable dependency after an upstream change**: the user
+  separately removed Redis/caching from `rag-text-to-sql` itself (on
+  GitHub, `tool` branch) — a genuinely useful case study in what
+  "editable" actually buys you and doesn't. Update procedure: `cd
+  rag-text-to-sql && git pull origin tool` — plain `git pull`, no
+  `pip install` needed for a pure code change, since editable install
+  means Python always reads the live source tree, not a snapshot. Our
+  locally-added `pyproject.toml` (untracked upstream) didn't conflict with
+  the pull. **What DID break**: that upstream change renamed/collapsed the
+  public function — `run_query_no_cache` no longer exists at all, it's
+  just `run_query(question)` now (same 7-key result shape, confirmed by
+  reading the new `query_service.py`). Since an editable install doesn't
+  re-check function signatures, this was a silent breakage waiting to
+  happen — `tools/text_to_sql.py` would have thrown `ImportError` on next
+  server start. Fixed: `tools/text_to_sql.py`'s import/call switched to
+  `run_query`; also removed `redis` from our own `pyproject.toml`'s
+  `dependencies` list (matching their `requirements.txt` dropping it) and
+  re-ran `pip install -e ./rag-text-to-sql` to apply that. Verified live
+  after both fixes: fresh question ("...in May 2026?") → correct answer
+  ("INR 22,198,754"). **Lesson for next time this dependency is updated**:
+  a `git pull` inside `rag-text-to-sql/` is not "safe by default" — always
+  re-check `tools/text_to_sql.py`'s imports still match what
+  `query_service.py` actually exports before assuming it still works.
+- **Two real gotchas hit and fixed while first testing this live**:
+  1. First call (`use_cache=True` default) failed with `ConnectionError:
+     ... connecting to localhost:6379. Connection refused` — Redis wasn't
+     running. Found an existing-but-stopped `rag-redis` Docker container
+     from the other project's own setup (`docker start rag-redis` — no
+     need to create a fresh one). Also confirms `use_cache=False`
+     genuinely bypasses Redis entirely, useful for isolating whether an
+     issue is Redis-related.
+  2. With `use_cache=False`, hit `sqlite3.OperationalError: no such table:
+     company_profiles` — importing `query_service` directly never runs the
+     other repo's `app/main.py` `lifespan` hook (or `ingest_knowledge.py`),
+     so the SQLite RAG tables never get created/populated on our side.
+     Fixed by copying an already-ingested `rag_store.db` (177 schema
+     chunks/5 examples/1 company profile — row counts matched exactly)
+     from the other clone at `~/Desktop/project/rag-text-to-sql/rag_store.db`
+     into this project's root, rather than re-running the (slower, Neon +
+     embedding-generating) ingestion script. `rag_store.db` added to
+     `.gitignore` (`*.db`/`*.sqlite3`) — it's environment data, not source.
+  - **Verified for real after both fixes**: "what was Futwork's total
+    revenue in March 2026?" via MCP Inspector CLI correctly returned "INR
+    22,063,632" (matching the exact figure documented in the other
+    project's own eval history) with both `use_cache=False` (full pipeline,
+    ~10s) and `use_cache=True` on a repeat identical question (Redis cache
+    hit, ~1s — real speedup confirmed, not just theoretical). **Superseded
+    by the `use_cache` removal above** — caching/Redis is no longer part of
+    this tool at all; kept this history for the record since it's how the
+    Redis-not-actually-required-for-`run_query_no_cache` fact was
+    originally confirmed.
+- **`rag-text-to-sql` converted from a plain gitignored clone to a real git
+  submodule** — a real deployment gap the user caught: since `text_to_sql`
+  genuinely imports from it at runtime, gitignoring it entirely meant a
+  fresh clone of `mcp-tools` elsewhere would be missing the code
+  `-e ./rag-text-to-sql` in `requirements.txt` points at. Surfaced
+  concretely when `git add .` on the plain-clone setup produced Git's own
+  "adding embedded git repository" warning (a nested `.git` inside
+  `mcp-tools` isn't something plain `git add` can represent correctly —
+  it would only record a dangling commit-SHA reference, no actual files).
+  Root cause of *that* specific incident: the `reference-tools-repo/` and
+  `rag-text-to-sql/` *pattern lines* in `.gitignore` had gone missing
+  (only their comments survived) — restored `reference-tools-repo/`
+  (still correctly gitignored, no runtime dependency), but for
+  `rag-text-to-sql` switched approach entirely: `git rm --cached -f
+  rag-text-to-sql` (undo the broken embedded-repo staging; `-f` needed
+  since staged content differed from HEAD — safe, `--cached` never
+  touches files on disk) then `git submodule add -b tool
+  https://github.com/viplav-artha/rag-text-to-sql.git rag-text-to-sql`
+  (reused the existing clone in place, no re-download). This commits a
+  `.gitmodules` pointer (URL + branch + exact commit) to `mcp-tools`
+  instead of the files themselves — the two repos' histories stay
+  separate, but `git clone --recurse-submodules` (or `git submodule
+  update --init` after a plain clone) now fetches the right
+  `rag-text-to-sql` code automatically, closing the deployment gap.
+  `README.md`'s clone instructions and "Setting up `text_to_sql`" section
+  updated to match (submodule init instead of a manual separate `git
+  clone`).
+
 ## Planned build order
 1. Project init (repo, `.gitignore`, `README.md`, `.venv`, `requirements.txt`) — **DONE**
 2. `server.py` — `mcp = FastMCP("tools")`, the shared server instance (successor to
@@ -270,7 +441,11 @@ this):**
 6. Connect a real client (Claude Code / MCP Inspector) to the running server and
    verify both tools are discovered and callable live. Not a new file — a
    verification lesson, same spirit as the companion repo's live Bedrock
-   verification step. — **NEXT**
+   verification step. — **DONE**
+7. `tools/text_to_sql.py` — wraps `rag-text-to-sql` (a separate,
+   production-intent repo) as an editable local package, exposing
+   `run_query`/`run_query_no_cache` as one MCP tool with a `use_cache`
+   cost-aware toggle. See "Adding `text_to_sql`" above for the full story. — **DONE**
 
 ## Files created so far (chronological)
 1. `.gitignore` — standard Python gitignore (from init-project bootstrap), also
@@ -294,24 +469,42 @@ this):**
    port=)` inside `if __name__ == "__main__":`. Verified working: launches
    Uvicorn on `0.0.0.0:8100`, `/mcp` endpoint live, shuts down cleanly.
 
+9. `rag-text-to-sql/pyproject.toml` — minimal packaging metadata added to
+   the cloned `rag-text-to-sql` repo (explicit `packages` list; see
+   "Adding `text_to_sql`" above) so it can be `pip install -e`'d — the one
+   new file added to that other, separately-maintained repo
+10. `tools/text_to_sql.py` — `text_to_sql` tool: imports `mcp` from
+    `server.py` and `run_query`/`run_query_no_cache` from the editable
+    `rag-text-to-sql` dependency; wraps the (blocking) call in
+    `asyncio.to_thread(...)`, `use_cache: bool = True` picks which function
+
 (`tools/__init__.py` was also created, as an empty package marker — not
 numbered, per the usual convention.)
 
 ## Environment
 - Activate venv: `source .venv/bin/activate`
-- Install deps: `pip install -r requirements.txt` (currently `mcp`, `httpx`,
-  `ddgs`, `python-dotenv` and their transitive dependencies, pinned via
-  `pip freeze`)
+- Before `pip install -r requirements.txt`: clone
+  `git clone -b tool https://github.com/viplav-artha/rag-text-to-sql.git`
+  as a sibling directory (`rag-text-to-sql/`, git-ignored) — the `-e
+  ./rag-text-to-sql` line in `requirements.txt` needs it to already exist.
+- Install deps: `pip install -r requirements.txt` — now a genuinely heavy
+  set (was just `mcp`/`httpx`/`ddgs`/`python-dotenv`; `text_to_sql`'s
+  editable dependency adds `torch`, `sentence-transformers`, `langgraph`,
+  `langchain-aws`, `sqlalchemy`, `psycopg`, `redis` and their transitive
+  deps), pinned via `pip freeze`
 - Run: `python main.py` — starts a Streamable HTTP MCP server at
   `http://0.0.0.0:8100/mcp` (override with `HOST`/`PORT` env vars)
-- Copy `.env.example` to `.env` and fill in a real Tavily API key before
-  `provider='tavily'` can be used live; `provider='duckduckgo'` (the default)
-  needs no key.
-- External services: Tavily API (env var `TAVILY_API_KEY`) for the paid search
-  provider, same as the companion repo. Key lives in a git-ignored `.env`.
-- External services (once `web_search` is added): same as companion repo —
-  Tavily API (env var `TAVILY_API_KEY`) for the paid search provider; duckduckgo
-  provider needs no key.
+- Copy `.env.example` to `.env` and fill in real values:
+  - `TAVILY_API_KEY` — only for `custom_web_search(provider='tavily')`;
+    `provider='duckduckgo'` (the default) needs no key.
+  - `DATABASE_URL`/`NEON_BRANCH`, `REDIS_URL`, `AWS_PROFILE`/`AWS_REGION`/
+    `BEDROCK_CHAT_MODEL_ID` — required for `text_to_sql` (real Bedrock +
+    Neon + Redis needed at call time). Already populated with working
+    values in this project's own `.env` — nothing further to configure.
+  - `rag_store.db` (this project's root) must be populated for
+    `text_to_sql` to generate correct SQL — copy an already-ingested one
+    or run `python -m scripts.ingest_knowledge` from inside
+    `rag-text-to-sql/`. See "Adding `text_to_sql`" above.
 
 ## Known gaps / deliberately deferred (be honest, don't hide these)
 - No tests yet.
@@ -322,6 +515,15 @@ numbered, per the usual convention.)
   machine" below) so the server accepts requests addressed to any
   host/IP — fine for a local/VM demo, not for a real internet-facing deploy.
 - No license chosen yet for the public repo (README has a TODO for this).
+- `text_to_sql` pulls in a genuinely heavy dependency stack (`torch` alone
+  is 100MB+) — a real jump from the other two tools' near-zero footprint,
+  worth knowing before installing this project on a constrained machine.
+- `rag_store.db` (the RAG knowledge store `text_to_sql` depends on) is
+  plain local file state, not shared/backed up anywhere — the same
+  tradeoff already documented in `rag-text-to-sql`'s own `CLAUDE.md`,
+  inherited here since we consume that repo directly. An empty/missing
+  store doesn't error, it silently produces wrong SQL — verify row counts
+  (see "Adding `text_to_sql`" above) if an answer looks off.
 - **RESOLVED, kept for reference**: SDK used `mcp.server.fastmcp.FastMCP` (v1
   naming) in initial `server.py` draft; the actually-installed `mcp==2.2.0` is
   v2, which renamed it to `mcp.server.mcpserver.MCPServer` and moved

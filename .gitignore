@@ -60,7 +60,18 @@ Thumbs.db
 reference-tools-repo/
 openwebui-venv/
 
+# rag-text-to-sql (tool branch) is a git submodule now (see .gitmodules),
+# NOT gitignored — its pointer/commit reference is tracked, so a fresh
+# clone with `git clone --recurse-submodules` (or `git submodule update
+# --init`) fetches the actual code automatically.
+
 # Open WebUI runtime state (secret key, local sqlite db, uploads) — not part of this project
 .webui_secret_key
 data/
 webui.db
+
+# Local RAG knowledge store for the text_to_sql tool (rag-text-to-sql's
+# rag_store.db, copied in from an already-ingested instance) — environment
+# data, not source code; re-copy or re-run ingest_knowledge.py to recreate.
+*.db
+*.sqlite3

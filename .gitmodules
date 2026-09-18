@@ -1,0 +1,4 @@
+[submodule "rag-text-to-sql"]
+	path = rag-text-to-sql
+	url = https://github.com/viplav-artha/rag-text-to-sql.git
+	branch = tool

@@ -8,6 +8,7 @@ from starlette.middleware.cors import CORSMiddleware
 from server import mcp
 import tools.get_current_time  # noqa: F401 (registers get_current_time)
 import tools.web_search  # noqa: F401 (registers custom_web_search)
+import tools.text_to_sql  # noqa: F401 (registers text_to_sql)
 
 load_dotenv()
 

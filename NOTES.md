@@ -27,7 +27,13 @@ graphs so the project's history and structure are visible at a glance.
 [7] tools/web_search.py
      |
      v
-[8] main.py   <-- NEXT: connect a real client (no new file, a verification step)
+[8] main.py
+     |
+     v
+[9] rag-text-to-sql/pyproject.toml
+     |
+     v
+[10] tools/text_to_sql.py   <-- latest; no further lesson currently planned
 ```
 
 ## Routes Graph (import / dependency connections)
@@ -49,8 +55,13 @@ is Routes Graph node 2 (Timeline `[5]`) — it imports the shared `mcp` instance
 from `server.py` to register itself via `@mcp.tool()`. `tools/web_search.py`
 is Routes Graph node 3 (Timeline `[7]`) — same import, for the same reason.
 `main.py` is Routes Graph node 4 (Timeline `[8]`) — it imports `mcp` from
-`server.py` (to call `mcp.run(...)`) and imports both tool modules (purely to
-trigger their registration side effect).
+`server.py` (to call `mcp.run(...)`) and imports all three tool modules
+(purely to trigger their registration side effect). `tools/text_to_sql.py`
+is Routes Graph node 5 (Timeline `[10]`) — imports `mcp` from `server.py`
+like the other two tools, plus `run_query`/`run_query_no_cache` from the
+externally-installed `rag-text-to-sql` package (not itself a node in this
+graph — it's a separate project's own codebase, not a file of this one,
+same reasoning as why `mcp`/`httpx`/`ddgs` aren't nodes here either).
 
 ```mermaid
 graph TD
@@ -58,11 +69,14 @@ graph TD
     n2["[2] tools/get_current_time.py"]
     n3["[3] tools/web_search.py"]
     n4["[4] main.py"]
+    n5["[5] tools/text_to_sql.py"]
     n1 -->|mcp| n2
     n1 -->|mcp| n3
     n1 -->|mcp| n4
+    n1 -->|mcp| n5
     n2 -.->|registration side effect| n4
     n3 -.->|registration side effect| n4
+    n5 -.->|registration side effect| n4
 ```
 
 ## File notes
@@ -174,3 +188,66 @@ chat and in CLAUDE.md, not here).
   this local/demo server) — see `CLAUDE.md` Known gaps. Verified: a
   request with a foreign `Host` header went from `421` to the normal `400`
   after this change.
+  Revised again: added optional `TLS_CERT_FILE`/`TLS_KEY_FILE` env vars,
+  passed to `uvicorn.run(..., ssl_certfile=, ssl_keyfile=)` — needed to
+  connect this server to a NemoClaw sandbox (`nemoclaw mcp add` requires
+  `https://`). Both unset (the default) keeps serving plain HTTP,
+  unaffected. See `CLAUDE.md`'s "Connecting this server to a NemoClaw
+  sandbox" section for the self-signed cert generation and the
+  `web_search` → `custom_web_search` rename this same effort surfaced.
+
+### [9] rag-text-to-sql/pyproject.toml
+- Motive: `rag-text-to-sql` (a separate repo, cloned as a sibling
+  directory to consume its `run_query`/`run_query_no_cache` for the new
+  `text_to_sql` tool) has no packaging metadata of its own — just a plain
+  `app/` directory run via `uvicorn app.main:app`. Without this file,
+  importing its code from this project would require a `sys.path` hack;
+  with it, it becomes a real installable dependency
+  (`pip install -e ./rag-text-to-sql`).
+- Logic: `[project]` table (name/version/`requires-python`) plus an
+  explicit `dependencies` list scoped to only what `run_query*`'s actual
+  call path needs (`langgraph`, `langchain-aws`, `langchain-huggingface`,
+  `sqlalchemy`, `psycopg[binary]`, `redis`, `python-dotenv` — not
+  `fastapi`/`uvicorn`/`langsmith`, confirmed unused on that path by
+  reading real imports). `[tool.setuptools] packages = [...]` explicitly
+  lists `app` + its four subpackages + `data`/`data.companies` (the
+  latter needed because `nodes.py` imports `data.companies.futwork`) —
+  required because setuptools' auto-discovery found multiple top-level
+  `__init__.py`-marked folders in that repo (`app`, `data`, `evals`,
+  `scripts`) and refused to guess which to package.
+
+### [10] tools/text_to_sql.py
+- Motive: Third tool — answers natural-language financial questions by
+  generating and executing real SQL, wrapping `rag-text-to-sql`'s
+  LangGraph pipeline instead of reimplementing it. First tool in this
+  project that depends on real external infrastructure (Bedrock, Neon)
+  rather than nothing or one optional key.
+- Logic: Imports `mcp` from `server.py` and `run_query` (current name —
+  see below) from the editable `rag-text-to-sql` dependency.
+  `text_to_sql(question: str) -> str` is decorated with `@mcp.tool()`;
+  since the underlying function is synchronous and blocking (real LLM +
+  DB calls), the call is wrapped in `asyncio.to_thread(...)`, same
+  pattern as `web_search`'s DuckDuckGo wrapper. Raises `ValueError` on any
+  of the three domain-specific error fields the pipeline returns
+  (`company_detection_error`/`validation_error`/`execution_error`); any
+  other exception propagates unwrapped. **Revised, per explicit user
+  request**: originally also exposed a Redis-cached `run_query` path
+  behind a `use_cache: bool = True` parameter (mirroring `web_search`'s
+  cost-aware `provider` pattern); removed entirely, always uncached, since
+  Redis wasn't wanted as a requirement. **Revised again, upstream change**:
+  the user then removed Redis/caching from `rag-text-to-sql` itself (its
+  `tool` branch, pulled via `git pull` into the editable clone) — that
+  collapsed the two functions back into one plain `run_query(question)`,
+  so `run_query_no_cache` no longer exists at all. Import/call updated
+  accordingly (`from app.services.query_service import run_query`); this
+  is the kind of breakage an editable install doesn't protect against —
+  pulling new upstream code can silently rename/remove what we import, no
+  install-time check catches it. Verified live end-to-end, both before and after that
+  removal: "what was Futwork's total revenue in March 2026?" correctly
+  returned "INR 22,063,632" (matching the other project's own eval
+  history) via full pipeline (~10s); after removing caching, re-verified
+  with a fresh question ("...in April 2026?" → "INR 21,835,812") with the
+  `rag-redis` Docker container stopped entirely, confirming Redis is
+  genuinely not required any more; after the upstream `run_query`
+  rename, re-verified once more with yet another fresh question
+  ("...in May 2026?" → "INR 22,198,754").
