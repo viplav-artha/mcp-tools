@@ -22,6 +22,7 @@ ENV/
 !.env.example
 !.env.sample
 .webui_secrets_key
+litellm_config.yaml
 
 # TLS private key and self-signed cert (environment-specific, generated
 # locally for connecting this server to a NemoClaw sandbox) — never commit
@@ -75,3 +76,4 @@ webui.db
 # data, not source code; re-copy or re-run ingest_knowledge.py to recreate.
 *.db
 *.sqlite3
+

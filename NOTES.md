@@ -33,7 +33,10 @@ graphs so the project's history and structure are visible at a glance.
 [9] rag-text-to-sql/pyproject.toml
      |
      v
-[10] tools/text_to_sql.py   <-- latest; no further lesson currently planned
+[10] tools/text_to_sql.py
+     |
+     v
+[11] pyproject.toml   <-- latest
 ```
 
 ## Routes Graph (import / dependency connections)
@@ -63,13 +66,17 @@ externally-installed `rag-text-to-sql` package (not itself a node in this
 graph — it's a separate project's own codebase, not a file of this one,
 same reasoning as why `mcp`/`httpx`/`ddgs` aren't nodes here either).
 
+Path note: `tools/` was moved to `src/tools/` on 2026-11-20 (with an empty
+`src/__init__.py`). The graph below uses the current paths; the Timeline and
+File notes keep the paths from when each file was created.
+
 ```mermaid
 graph TD
     n1["[1] server.py"]
-    n2["[2] tools/get_current_time.py"]
-    n3["[3] tools/web_search.py"]
+    n2["[2] src/tools/get_current_time.py"]
+    n3["[3] src/tools/web_search.py"]
     n4["[4] main.py"]
-    n5["[5] tools/text_to_sql.py"]
+    n5["[5] src/tools/text_to_sql.py"]
     n1 -->|mcp| n2
     n1 -->|mcp| n3
     n1 -->|mcp| n4
@@ -251,3 +258,27 @@ chat and in CLAUDE.md, not here).
   genuinely not required any more; after the upstream `run_query`
   rename, re-verified once more with yet another fresh question
   ("...in May 2026?" → "INR 22,198,754").
+
+### [11] pyproject.toml
+- Motive: `requirements.txt` is a full `pip freeze` and does not distinguish
+  what this project imports from transitive packages. `pyproject.toml` records
+  the direct dependencies and supported Python versions in the standard
+  location.
+- Logic: `[project]` sets name, version, `requires-python = ">=3.10"` and six
+  direct dependencies with minimum versions (`mcp`, `httpx`, `ddgs`,
+  `python-dotenv`, `uvicorn`, `starlette`). `[build-system]` uses setuptools.
+  `[tool.setuptools]` lists `main` and `server` as modules and `tools` as a
+  package, since auto-discovery refuses to choose among the repo's top-level
+  directories. The `rag-text-to-sql` dependency is intentionally not declared
+  because that integration is being replaced by an API. Until then, installing
+  from `pyproject.toml` alone leaves `tools/text_to_sql.py` unable to import,
+  so `main.py` fails at startup; `requirements.txt` stays the working install
+  path. Not added to the Routes Graph: it contains no imports.
+
+### Restructure: `tools/` to `src/tools/` (2026-11-20)
+- Motive: group application code under `src/`.
+- Logic: `src/__init__.py` (empty) makes `src` a package; `main.py` imports
+  `src.tools.*` instead of `tools.*`; `server.py` stays in the root so the
+  tool files' `from server import mcp` does not change; `pyproject.toml`
+  lists `src` and `src.tools` as packages. No new graph node: the edges are
+  unchanged.

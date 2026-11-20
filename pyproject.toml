@@ -1,0 +1,22 @@
+[project]
+name = "mcp-tools"
+version = "0.1.0"
+description = "MCP server exposing get_current_time, custom_web_search and text_to_sql over Streamable HTTP"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=2.2.0",
+    "httpx>=0.28.1",
+    "ddgs>=9.16.0",
+    "python-dotenv>=1.2.3",
+    "uvicorn>=0.52.4",
+    "starlette>=1.6.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main", "server"]
+packages = ["src", "src.tools"]

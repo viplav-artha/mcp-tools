@@ -37,7 +37,7 @@ intentionally kept light for now.
   command first.
 - Structural mirror of the companion repo, deliberate: `server.py` (holds the
   shared `FastMCP` instance) is the spiritual successor to `tools/registry.py`;
-  individual tool files under `tools/` import that instance and decorate with
+  individual tool files under `src/tools/` import that instance and decorate with
   `@mcp.tool()` instead of the hand-written `@tool(name=..., input_schema=...)`;
   `main.py` imports tool modules for registration + launches the server, same
   role `agent.py`/`main.py` played before.
@@ -478,7 +478,29 @@ this):**
     `rag-text-to-sql` dependency; wraps the (blocking) call in
     `asyncio.to_thread(...)`, `use_cache: bool = True` picks which function
 
-(`tools/__init__.py` was also created, as an empty package marker — not
+11. `pyproject.toml` — project metadata and the *direct* dependencies only
+    (`mcp`, `httpx`, `ddgs`, `python-dotenv`, `uvicorn`, `starlette`, floored
+    at the versions installed on 2026-11-20), `requires-python = ">=3.10"`,
+    setuptools backend with an explicit module list (`main`, `server`, package
+    `tools`) because auto-discovery refuses to guess among the repo's several
+    top-level folders. Deliberately does NOT declare the in-process
+    `rag-text-to-sql` dependency (being replaced by an API call). Consequence:
+    `main.py` imports `tools.text_to_sql` unconditionally, so a
+    `pyproject.toml`-only install starts failing at that import until the API
+    swap lands; `requirements.txt` (pinned freeze incl. the editable
+    submodule) remains the working install path for now.
+
+**Restructure (2026-11-20):** `tools/` moved to `src/tools/`, and an empty
+`src/__init__.py` makes `src` a package. `main.py` now imports
+`src.tools.get_current_time`/`src.tools.web_search`/`src.tools.text_to_sql`;
+`server.py` stays in the repo root, so the tool files' `from server import mcp`
+is unchanged and `python main.py` still works from the root. `pyproject.toml`
+lists `packages = ["src", "src.tools"]`. Entries above that say `tools/...`
+record the path at the time the file was created. Verified by importing
+`main` and listing the registered tools (all three present); the server was
+not started.
+
+(`tools/__init__.py` (now `src/tools/__init__.py`) was also created, as an empty package marker — not
 numbered, per the usual convention.)
 
 ## Environment
@@ -562,3 +584,37 @@ Timeline graph, and the import-dependency Routes Graph.
    `Motive` line and a `Logic` line. No analogies, short and factual.
 
 Do all four every time, without waiting to be asked again.
+
+## Maintenance instructions — keep `docs/` current as changes land
+`docs/` (house style: terse, engineering-grade, facts only) is the durable record of how the
+server works. Unlike `NOTES.md` (teaching notes, per new file), `docs/` tracks *behavior and
+decisions*, so it must be updated for any change that affects them, not only new files. Do this
+in the same turn as the change, without being asked again:
+
+1. **Tool added, renamed, removed, or its parameters/return/error behavior changed** → update
+   `docs/tools.md` (summary table + that tool's section).
+2. **Change to `server.py`, `main.py`, transport, CORS, TLS, env vars, or the request path** →
+   update `docs/architecture/server-design.md` (components, runtime configuration table,
+   request path, known gaps, verification).
+3. **`text_to_sql` moves from the in-process pipeline to an API** → rewrite the "Planned
+   `text_to_sql` integration change" section of `server-design.md` and the `text_to_sql`
+   section of `tools.md`. Flip its status from Planned to **Implemented** with the date, and
+   record only what is actually decided or built (endpoint, request/response shape, auth,
+   timeout/retry behavior). Do not invent API details before they exist.
+4. **New area with its own material** → add a doc in the existing layout: top-level
+   `docs/<topic>.md` for features/integrations, `docs/architecture/` for design and deferred
+   follow-ups, `docs/operations/<subject>-<YYYY-MM-DD>.md` for dated rollouts,
+   `docs/security/` for reviews. Lowercase kebab-case names, no index file.
+5. **Update in place, never add a parallel doc.** If a doc is now wrong, fix it. If a plan is
+   cancelled or superseded, keep it with a banner (what replaced it, date, "do not execute").
+6. **Style rules** (full guide: `~/.claude/skills/write-project-docs/references/style-guide.md`):
+   - Facts only, traceable to code, config, command output, or git history; otherwise say
+     "not verified" or omit.
+   - Mark status honestly (Implemented / Planned / Deferred / Superseded) with absolute dates.
+   - Say what was verified and what was not. Note any security-relevant tradeoff.
+   - Name env vars, never values. No secrets, keys, connection strings, internal IPs, cloud
+     account IDs, or personal data.
+   - Describe the project, not the session: no "as discussed", no mention of the AI.
+7. **Check links and anchors** between docs still resolve after an edit, and add new docs to
+   the README's Documentation section.
+8. Do not commit docs changes without the explicit go-ahead required for all git commands.
