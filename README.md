@@ -1,8 +1,9 @@
 # mcp-tools
 
-An MCP (Model Context Protocol) server built with the official MCP Python SDK's high-level
-`MCPServer` API (`mcp` package v2 — this class was named `FastMCP` in v1, see a note on this
-below), exposing tools over Streamable HTTP. Converts the hand-rolled tools from the companion
+An MCP (Model Context Protocol) server built with the [`fastmcp`](https://pypi.org/project/fastmcp/)
+library (`FastMCP`; it was built on the official `mcp` SDK's `MCPServer` until 2026-11-20 — see
+[docs/architecture/server-design.md](docs/architecture/server-design.md)), exposing tools over
+Streamable HTTP. Converts the hand-rolled tools from the companion
 learning repo [tools](https://github.com/viplav-artha/tools) (a custom tool registry + agent loop
 built against AWS Bedrock's Converse API) into real MCP tools, to understand how MCP standardizes
 tool-calling across clients.
@@ -65,13 +66,14 @@ Edit `.env` if needed — every variable has a working default:
 |---|---|---|
 | `TAVILY_API_KEY` | _(none)_ | only `web_search(provider="tavily")` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:8080` | letting a browser-based client (e.g. Open WebUI) call this server — see below |
+| `MCP_ALLOWED_HOSTS` | _(none)_ | extra `Host` values accepted besides localhost, e.g. a VM IP or public domain — required when clients reach the server by any other address |
 | `HOST` | `0.0.0.0` | which interface the server binds to |
 | `PORT` | `8100` | which port the server listens on |
 
 ### 3. Start the server
 
 ```bash
-python main.py
+python -m src.server
 ```
 
 This starts a Streamable HTTP MCP server at `http://<HOST>:<PORT>/mcp` (default
@@ -165,6 +167,11 @@ working bridge is the [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) n
 
 Requires Node.js/`npx`. Fully quit and reopen Claude Desktop after editing the config (closing the
 window alone doesn't reload it).
+
+## Documentation
+
+- [Tools](docs/tools.md) — the contract of each tool.
+- [Server design](docs/architecture/server-design.md) — components, request path, framework, known gaps.
 
 ## Known gaps
 

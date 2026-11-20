@@ -37,10 +37,16 @@ intentionally kept light for now.
   command first.
 - Structural mirror of the companion repo, deliberate: `server.py` (holds the
   shared `FastMCP` instance) is the spiritual successor to `tools/registry.py`;
-  individual tool files under `src/tools/` import that instance and decorate with
-  `@mcp.tool()` instead of the hand-written `@tool(name=..., input_schema=...)`;
-  `main.py` imports tool modules for registration + launches the server, same
-  role `agent.py`/`main.py` played before.
+  individual tool files under `src/tools/` expose a `register(mcp)` function
+  (since 2026-11-20; before that they imported the instance and decorated with
+  `@mcp.tool()`), and `server.py` calls each `register(mcp)`; `main.py` imports
+  `mcp` from `server.py` + launches the server, same role
+  `agent.py`/`main.py` played before. Tool modules must not import `server.py`.
+  Adding a tool = new file in `src/tools/` + add it to `server.py`'s imports and
+  `register` calls (an unlisted tool is not registered).
+  **Superseded the same day:** root `server.py` and `main.py` were merged into
+  `src/server.py`; the tool list lives in `src/tools/__init__.py`
+  (`register_all`). See "Framework switch" below.
 
 ## Current status
 Stage: `main.py` done — the server is runnable end-to-end and verified locally
@@ -61,7 +67,7 @@ Client verification (build order item 6) is **DONE** — verified live via
 Claude Code, Open WebUI, and MCP Inspector CLI (including from a separate
 Multipass VM over the network). A third tool, `text_to_sql`, has since been
 added — see the dedicated section below. Server may not currently be
-running; restart with `source .venv/bin/activate && python main.py` if
+running; restart with `source .venv/bin/activate && python -m src.server` if
 `curl http://127.0.0.1:8100/mcp` doesn't respond.
 
 **Client-connection findings (relevant to any future session working on
@@ -426,6 +432,48 @@ this):**
   updated to match (submodule init instead of a manual separate `git
   clone`).
 
+## Framework switch: official `mcp` SDK -> `fastmcp` (2026-11-20)
+- **Direction change.** The project started as a learning demo on the official
+  `mcp` SDK (`MCPServer`). It is now intended to be a production server for
+  individual users (per-user Keycloak sign-in, per-tool permission tiers,
+  100+ tools). Earlier sections of this file describe the SDK-based server and
+  remain as history; sections that mention `MCPServer`, `streamable_http_app()`
+  or disabling DNS-rebinding protection are superseded by this one.
+- **What changed.** `server.py` uses `from fastmcp import FastMCP` with
+  `FastMCP(name="tools")`; tool modules take a `FastMCP` in `register`.
+  `main.py` builds the app with `mcp.http_app(path="/mcp", middleware=[CORS],
+  host_origin_protection=True, allowed_hosts=..., allowed_origins=...)`.
+  `pyproject.toml` depends on `fastmcp>=4.0.5,<5.0.0` (same range as
+  `artha-mcp`; 4.2.3 installed) and no longer lists `mcp` directly (it is a
+  transitive dependency, upgraded 2.2.0 -> 2.3.0). `requirements.txt`
+  regenerated from the venv, `-e ./rag-text-to-sql` kept as a relative path.
+- **Behavior change, deliberate.** The Host/Origin guard is now ON. Tested
+  finding: with the library default (`host_origin_protection=None`) a request
+  with `Host: evil.test` got `200`; with `True` it gets `421`. Any non-localhost
+  address clients use (a VM IP, a public domain) must be listed in the new
+  `MCP_ALLOWED_HOSTS` env var, or it is rejected. Foreign `Origin` returns `403`.
+  This replaces the old `enable_dns_rebinding_protection=False` workaround.
+- **Verified 2026-11-20:** in-memory `fastmcp` client (list, call, error cases);
+  live server over HTTPS (`.env` sets `TLS_CERT_FILE`/`TLS_KEY_FILE`, so plain
+  `curl http://` fails to connect) with the Host/Origin results above.
+  **Not re-verified:** Claude Code, Open WebUI, Claude Desktop/`mcp-remote`,
+  NemoClaw, and live `text_to_sql`/`custom_web_search` backends.
+- **Entry point merged (2026-11-20, later the same day):** root `server.py` and
+  `main.py` deleted; `src/server.py` now creates the `FastMCP` instance, calls
+  `register_all(mcp)` from `src/tools/__init__.py`, and has `main()` with the
+  CORS/guard/TLS/uvicorn logic. Run with `python -m src.server` (or the
+  `mcp-tools` console script in `pyproject.toml`; `py-modules` removed, packages
+  are `src` and `src.tools`). Reason: the circular-import constraint that
+  separated them was gone, and `artha-mcp` uses a single `src/server.py`.
+  Adding a tool = file in `src/tools/` + add to `_MODULES` in
+  `src/tools/__init__.py`. Verified: all modules on disk are listed; in-memory
+  client lists 3 tools and calls one; live server started with
+  `python -m src.server` returns 200/200/421 for localhost/allowlisted/foreign
+  Host and 200/403 for allowed/foreign Origin.
+- **Not implemented yet (planned):** Keycloak auth, scope tiers, shared API
+  client with safe error mapping, tests, `mask_error_details`. See
+  `docs/architecture/server-design.md`.
+
 ## Planned build order
 1. Project init (repo, `.gitignore`, `README.md`, `.venv`, `requirements.txt`) — **DONE**
 2. `server.py` — `mcp = FastMCP("tools")`, the shared server instance (successor to
@@ -490,6 +538,15 @@ this):**
     swap lands; `requirements.txt` (pinned freeze incl. the editable
     submodule) remains the working install path for now.
 
+**`register(mcp)` pattern (2026-11-20):** each tool module now defines a plain
+function plus `register(mcp)` calling `mcp.tool()(fn)`; `server.py` creates the
+instance and calls the three `register` functions; `main.py` no longer imports
+tool modules. Verified by importing `server`, listing the three tools with
+their schemas, and calling `get_current_time` directly; the server was not
+started. Modeled on `artha-mcp`'s `register(mcp)` convention, except that tool
+functions are module-level (not nested inside `register`) so they stay
+directly testable.
+
 **Restructure (2026-11-20):** `tools/` moved to `src/tools/`, and an empty
 `src/__init__.py` makes `src` a package. `main.py` now imports
 `src.tools.get_current_time`/`src.tools.web_search`/`src.tools.text_to_sql`;
@@ -500,7 +557,11 @@ record the path at the time the file was created. Verified by importing
 `main` and listing the registered tools (all three present); the server was
 not started.
 
-(`tools/__init__.py` (now `src/tools/__init__.py`) was also created, as an empty package marker — not
+12. `src/tools/__init__.py` — now has content (`register_all`, `_MODULES`).
+13. `src/server.py` — merged entry point (instance, `register_all`, `main()`).
+    Replaces files 4 (`server.py`) and 8 (`main.py`), which were deleted.
+
+(`tools/__init__.py` (now `src/tools/__init__.py`) was originally created, as an empty package marker — not
 numbered, per the usual convention.)
 
 ## Environment
@@ -514,7 +575,7 @@ numbered, per the usual convention.)
   editable dependency adds `torch`, `sentence-transformers`, `langgraph`,
   `langchain-aws`, `sqlalchemy`, `psycopg`, `redis` and their transitive
   deps), pinned via `pip freeze`
-- Run: `python main.py` — starts a Streamable HTTP MCP server at
+- Run: `python -m src.server` (before 2026-11-20: `python main.py`) — starts a Streamable HTTP MCP server at
   `http://0.0.0.0:8100/mcp` (override with `HOST`/`PORT` env vars)
 - Copy `.env.example` to `.env` and fill in real values:
   - `TAVILY_API_KEY` — only for `custom_web_search(provider='tavily')`;

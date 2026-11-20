@@ -1,10 +1,9 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from server import mcp
+from fastmcp import FastMCP
 
 
-@mcp.tool()
 async def get_current_time(timezone: str = "UTC") -> str:
     """Get the current date and time in a given IANA timezone.
 
@@ -25,3 +24,7 @@ async def get_current_time(timezone: str = "UTC") -> str:
 
     now = datetime.now(zone)
     return now.strftime("%Y-%m-%d %H:%M:%S %Z (%z)")
+
+
+def register(mcp: FastMCP) -> None:
+    mcp.tool()(get_current_time)

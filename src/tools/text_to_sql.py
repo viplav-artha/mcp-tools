@@ -1,11 +1,9 @@
 import asyncio
 
 from app.services.query_service import run_query
+from fastmcp import FastMCP
 
-from server import mcp
 
-
-@mcp.tool()
 async def text_to_sql(question: str) -> str:
     """Answer a natural-language financial question by generating and running SQL.
 
@@ -27,3 +25,7 @@ async def text_to_sql(question: str) -> str:
         raise ValueError(result["execution_error"])
 
     return f"{result['final_answer']}\n\n(SQL used: {result['generated_sql']})"
+
+
+def register(mcp: FastMCP) -> None:
+    mcp.tool()(text_to_sql)

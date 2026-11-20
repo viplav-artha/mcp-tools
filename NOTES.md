@@ -36,7 +36,13 @@ graphs so the project's history and structure are visible at a glance.
 [10] tools/text_to_sql.py
      |
      v
-[11] pyproject.toml   <-- latest
+[11] pyproject.toml
+     |
+     v
+[12] src/tools/__init__.py
+     |
+     v
+[13] src/server.py   <-- latest (merges [4] server.py and [8] main.py, both deleted)
 ```
 
 ## Routes Graph (import / dependency connections)
@@ -53,18 +59,17 @@ labeled with *what* it imports.
 **The number in each node's label is its own sequence number within THIS
 graph only — it does NOT match the Timeline number for the same file.**
 
-`server.py` is Routes Graph node 1 (Timeline `[4]`). `tools/get_current_time.py`
-is Routes Graph node 2 (Timeline `[5]`) — it imports the shared `mcp` instance
-from `server.py` to register itself via `@mcp.tool()`. `tools/web_search.py`
-is Routes Graph node 3 (Timeline `[7]`) — same import, for the same reason.
-`main.py` is Routes Graph node 4 (Timeline `[8]`) — it imports `mcp` from
-`server.py` (to call `mcp.run(...)`) and imports all three tool modules
-(purely to trigger their registration side effect). `tools/text_to_sql.py`
-is Routes Graph node 5 (Timeline `[10]`) — imports `mcp` from `server.py`
-like the other two tools, plus `run_query`/`run_query_no_cache` from the
-externally-installed `rag-text-to-sql` package (not itself a node in this
-graph — it's a separate project's own codebase, not a file of this one,
-same reasoning as why `mcp`/`httpx`/`ddgs` aren't nodes here either).
+Since 2026-11-20 the root `server.py` and `main.py` are merged into
+`src/server.py`, which is Routes Graph node 1 (Timeline `[13]`). It imports
+`register_all` from `src/tools/__init__.py` (node 2, Timeline `[12]`), which
+imports the three tool modules — `src/tools/get_current_time.py` (node 3,
+Timeline `[5]`), `src/tools/web_search.py` (node 4, Timeline `[7]`) and
+`src/tools/text_to_sql.py` (node 5, Timeline `[10]`) — and calls each one's
+`register(mcp)`. Tool modules import nothing from `src/server.py`.
+`text_to_sql.py` additionally imports `run_query` from the externally-installed
+`rag-text-to-sql` package (not itself a node in this graph — it's a separate
+project's own codebase, same reasoning as why `fastmcp`/`httpx`/`ddgs` aren't
+nodes here either).
 
 Path note: `tools/` was moved to `src/tools/` on 2026-11-20 (with an empty
 `src/__init__.py`). The graph below uses the current paths; the Timeline and
@@ -72,18 +77,15 @@ File notes keep the paths from when each file was created.
 
 ```mermaid
 graph TD
-    n1["[1] server.py"]
-    n2["[2] src/tools/get_current_time.py"]
-    n3["[3] src/tools/web_search.py"]
-    n4["[4] main.py"]
+    n1["[1] src/server.py"]
+    n2["[2] src/tools/__init__.py"]
+    n3["[3] src/tools/get_current_time.py"]
+    n4["[4] src/tools/web_search.py"]
     n5["[5] src/tools/text_to_sql.py"]
-    n1 -->|mcp| n2
-    n1 -->|mcp| n3
-    n1 -->|mcp| n4
-    n1 -->|mcp| n5
-    n2 -.->|registration side effect| n4
-    n3 -.->|registration side effect| n4
-    n5 -.->|registration side effect| n4
+    n3 -->|register| n2
+    n4 -->|register| n2
+    n5 -->|register| n2
+    n2 -->|register_all| n1
 ```
 
 ## File notes
@@ -282,3 +284,56 @@ chat and in CLAUDE.md, not here).
   tool files' `from server import mcp` does not change; `pyproject.toml`
   lists `src` and `src.tools` as packages. No new graph node: the edges are
   unchanged.
+
+### Restructure: `register(mcp)` pattern (2026-11-20)
+- Motive: remove registration by import side effect and the circular-import
+  constraint that forced the instance into its own file. A tool not imported
+  by `main.py` was silently not registered.
+- Logic: each tool module defines its function as a plain module-level
+  function and a `register(mcp: MCPServer)` that calls `mcp.tool()(fn)`. No
+  tool module imports `server.py`. `server.py` creates `mcp = MCPServer("tools")`
+  and calls `get_current_time.register(mcp)`, `web_search.register(mcp)` and
+  `text_to_sql.register(mcp)`. `main.py` only imports `mcp` from `server.py`.
+  Tool functions can be imported and called directly, because `mcp.tool()`
+  returns the original function. Routes Graph edges updated: tool modules
+  now point to `server.py`, and `main.py` no longer imports them.
+
+### Framework switch: `mcp` SDK to `fastmcp` (2026-11-20)
+- Motive: the server is to be production-grade for individual users (Keycloak
+  sign-in, per-tool permission tiers, 100+ tools). `fastmcp` provides auth
+  providers, per-tool auth and middleware; the official SDK's `MCPServer` did
+  not expose per-tool scope checks or a Keycloak provider in the methods
+  inspected.
+- Logic: `server.py` now creates `FastMCP(name="tools")`. The tool modules'
+  `register` functions take a `FastMCP`. `main.py` calls `mcp.http_app(path=
+  "/mcp", middleware=[Middleware(CORSMiddleware, ...)], host_origin_protection=
+  True, allowed_hosts=MCP_ALLOWED_HOSTS, allowed_origins=CORS_ALLOWED_ORIGINS)`
+  and passes the result to `uvicorn.run`, replacing `streamable_http_app()` plus
+  `TransportSecuritySettings(enable_dns_rebinding_protection=False)`. The
+  guard had to be enabled explicitly: with the default, a foreign `Host` was
+  accepted. Routes Graph unchanged: the same files import each other; only
+  the imported library changed. `pyproject.toml` and `requirements.txt` were
+  updated for the new dependency.
+
+### [12] src/tools/__init__.py
+- Motive: with the `register(mcp)` pattern the list of tool modules needs one
+  home. Keeping it here keeps the entry file small as the number of tools grows.
+- Logic: imports each tool module and holds them in `_MODULES`. `register_all(mcp:
+  FastMCP)` calls each module's `register(mcp)`. A module that is not listed in
+  `_MODULES` is not registered; the check that every module on disk is listed
+  was done manually on 2026-11-20 (no automated test yet).
+
+### [13] src/server.py
+- Motive: one entry point, as in `artha-mcp`. The root `server.py` existed only
+  to avoid a circular import between `main.py` and the tool files; after the
+  `register(mcp)` change that reason no longer applied, so `server.py` and
+  `main.py` were merged and both root files deleted.
+- Logic: loads `.env`, creates `mcp = FastMCP(name="tools")`, calls
+  `register_all(mcp)`. `main()` reads `HOST`/`PORT`, `CORS_ALLOWED_ORIGINS` and
+  `MCP_ALLOWED_HOSTS`, builds the app with `mcp.http_app(path="/mcp",
+  middleware=[CORS], host_origin_protection=True, allowed_hosts=,
+  allowed_origins=)` and runs it with `uvicorn.run`, passing `TLS_CERT_FILE` /
+  `TLS_KEY_FILE` when set. Run with `python -m src.server` or the `mcp-tools`
+  console script declared in `pyproject.toml`. Verified 2026-11-20: tool list,
+  one call, and the Host/Origin results (421 foreign Host, 403 foreign Origin).
+  Entries [4] and [8] above describe the earlier two-file layout.
