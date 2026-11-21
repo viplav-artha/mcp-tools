@@ -13,6 +13,12 @@ dependencies = [
     "starlette>=1.6.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -22,3 +28,9 @@ mcp-tools = "src.server:main"
 
 [tool.setuptools]
 packages = ["src", "src.tools"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]

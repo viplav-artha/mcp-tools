@@ -204,8 +204,27 @@ Documenting this plan does not authorize the migration. No owner or review date 
 - **Host and Origin allowlists must be kept accurate.** The guard is on, but `MCP_ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` have to list every address and browser origin clients really use.
 - **`CORS_ALLOWED_ORIGINS` must stay an explicit list.** `*` was used briefly during testing and was replaced by the allowlist; it should not return once the server is reachable beyond the local machine.
 - **TLS is optional and manually provisioned.** The repository serves HTTPS only when a certificate and key are supplied. The self-signed pair used for sandbox testing is git-ignored (`*.pem`) and tied to one environment's address.
-- **No automated tests.** There is no `tests/` directory.
+- **Partial automated test coverage.** `tests/` covers `get_current_time` and `custom_web_search`. `tests/test_server.py` covers server imports and tool registration. There are no tests for `text_to_sql` or the Host/Origin guard.
 - **No licence** has been chosen.
+
+## Testing
+
+Tests use `pytest` with `pytest-asyncio` (`asyncio_mode = "auto"` and `pythonpath = ["."]` in `pyproject.toml`); both are in the `dev` optional dependencies.
+
+```sh
+pip install -e ".[dev]"
+python -m pytest -v
+```
+
+`tests/test_get_current_time.py` has 8 test cases: the UTC default, the output format, a fixed-offset zone (`Asia/Kolkata`), that the returned time is within 5 seconds of the real UTC clock, and rejection of an unknown zone and of three malformed names (`""`, `"../etc/passwd"`, `" UTC"`) with `ValueError`. They call the tool function directly, with no server and no network. All 8 passed on 2026-11-20. To confirm they can fail, the function was temporarily changed twice (default zone altered; unknown zone no longer raising) and the expected tests failed; the file was then restored.
+
+`tests/test_web_search.py` has 11 test cases for `custom_web_search`, with no network access. DuckDuckGo is replaced by a fake `DDGS` class and Tavily by an `httpx.MockTransport`. Cases: result formatting for both providers, the empty-result message, that the default provider is DuckDuckGo and asks for 5 results, the Tavily request (method, URL, bearer header, JSON body), the missing-key `ValueError` raised before any request, and an HTTP 500 propagating as `httpx.HTTPStatusError` (current behavior, to be revisited with the shared API client). Two cases go through the in-memory `fastmcp` `Client`: an invalid `provider` is rejected with a validation error and nothing is searched, and the schema lists the `duckduckgo` and `tavily` choices with `duckduckgo` as default and `query` required. The protocol-level cases exist because calling the function directly skips validation: `custom_web_search("q", provider="bing")` silently uses DuckDuckGo.
+
+An autouse fixture makes any real DuckDuckGo or `httpx` call fail and replaces `TAVILY_API_KEY` with a dummy value. This matters because `load_dotenv()` runs at import, so a developer's real key is otherwise present during tests. All 19 tests in `tests/` passed on 2026-11-20. The tool was temporarily broken four ways (default provider, missing-key check removed, result count changed, header format changed) and a careless test without a fake was added; each was caught and the files were restored.
+
+`tests/test_server.py` has 6 test cases that check the server as a whole, using the in-memory `fastmcp` client and no network: `src.server` imports cleanly and is named `tools`; the registered tool names equal the set of public functions defined in every module file under `src/tools/` (discovered with `pkgutil` and `inspect`, so a new tool needs no test edit; this catches a defined-but-unregistered function, an unlisted module, and a registered name with no function; it relies on helpers starting with an underscore and the tool name equalling the function name); every module in `src/tools/` is listed in `_MODULES`; every listed module has a callable `register`; no two tools share a name; and every tool has a non-empty description and an object schema. The name check builds a fresh `FastMCP(name="strict", on_duplicate="error")` and runs `register_all` on it. `src/server.py` itself uses the library default, which on a repeated tool name only logs a warning (`Component already exists`) and carries on; whether to set `on_duplicate="error"` there is undecided. All 25 tests passed on 2026-11-20. The server was temporarily broken four ways (a module removed from `_MODULES`, an unlisted module file added, a module listed twice, a tool without a docstring) and the test for tool discovery was additionally checked against a defined-but-unregistered function; the matching tests failed each time and the files were restored.
+
+The tests do not cover the `text_to_sql` tool or the HTTP Host/Origin guard, and do not exercise the real DuckDuckGo or Tavily services or confirm Tavily's response shape against its documentation. Lowercase zone names (`asia/kolkata`) and zones with daylight saving are deliberately not asserted: the first depends on the host file system's case sensitivity, the second on the date. Importing any `src.tools` module currently also imports the text-to-SQL pipeline through `src/tools/__init__.py`, which is why test runs print dependency deprecation warnings.
 
 ## Verification
 

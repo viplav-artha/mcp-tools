@@ -175,7 +175,7 @@ window alone doesn't reload it).
 
 ## Known gaps
 
-- No tests yet.
+- Tests so far cover `get_current_time` and `custom_web_search` (`tests/`); the server-level checks (imports, tool registration) are in `tests/test_server.py`; `text_to_sql` and the HTTP Host/Origin guard are untested. Run with `python -m pytest` after `pip install -e ".[dev]"`.
 - No auth/security hardening beyond CORS — this is a learning project, not a production server.
 - No license chosen yet.
 - `text_to_sql` pulls in a genuinely heavy dependency stack (`torch`, `sentence-transformers`,

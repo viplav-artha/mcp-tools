@@ -561,6 +561,33 @@ not started.
 13. `src/server.py` — merged entry point (instance, `register_all`, `main()`).
     Replaces files 4 (`server.py`) and 8 (`main.py`), which were deleted.
 
+14. `tests/test_get_current_time.py` — first test file: 8 cases for
+    `get_current_time` (default UTC, output format, fixed-offset zone, time is
+    near now, unknown zone and malformed names raise `ValueError`). Also added
+    `pytest`/`pytest-asyncio` as a `dev` extra and a `[tool.pytest.ini_options]`
+    section (`asyncio_mode = "auto"`, `testpaths`, `pythonpath = ["."]`) to
+    `pyproject.toml`. `requirements.txt` was NOT regenerated for the dev
+    packages. Observed gap, not fixed: only a not-found zone gets the tool's
+    friendly message; `""` and `"../etc/passwd"` raise `ValueError` with
+    Python's own `zoneinfo` message.
+
+15. `tests/test_web_search.py` — 11 cases for `custom_web_search`, no network:
+    fake `DDGS` class, `httpx.MockTransport` for Tavily, an autouse
+    `no_real_network` fixture (real calls raise; `TAVILY_API_KEY` replaced by a
+    dummy because `load_dotenv()` puts the real key in the environment at
+    import), and two protocol-level cases via `fastmcp.Client(mcp)` — direct
+    function calls skip validation, so `provider="bing"` is only rejected
+    through the protocol. Uses `Tool.input_schema` (`inputSchema` is deprecated
+    in the current SDK). Broken four ways to confirm it fails; restored.
+
+16. `tests/test_server.py` — 6 server-level cases via the in-memory
+    `fastmcp.Client(mcp)`: `src.server` imports and is named `tools`; tool names
+    equal the public functions discovered in `src/tools/*.py` (no hand-typed list, so adding a tool needs no test edit; helpers must start with `_`, tool name = function name); every module in
+    `src/tools/` is in `_MODULES` (catches the silent forgotten-registration
+    trap); each has a callable `register`; no duplicate tool names (fresh
+    `FastMCP(on_duplicate="error")`); every tool has a description and an object
+    schema. Broken four ways to confirm it fails; restored.
+
 (`tools/__init__.py` (now `src/tools/__init__.py`) was originally created, as an empty package marker — not
 numbered, per the usual convention.)
 
@@ -575,6 +602,8 @@ numbered, per the usual convention.)
   editable dependency adds `torch`, `sentence-transformers`, `langgraph`,
   `langchain-aws`, `sqlalchemy`, `psycopg`, `redis` and their transitive
   deps), pinned via `pip freeze`
+- Test: `pip install -e ".[dev]"` then `python -m pytest -v` (pytest 9.2.0,
+  pytest-asyncio 1.5.0 installed; config in `pyproject.toml`).
 - Run: `python -m src.server` (before 2026-11-20: `python main.py`) — starts a Streamable HTTP MCP server at
   `http://0.0.0.0:8100/mcp` (override with `HOST`/`PORT` env vars)
 - Copy `.env.example` to `.env` and fill in real values:
@@ -590,7 +619,11 @@ numbered, per the usual convention.)
     `rag-text-to-sql/`. See "Adding `text_to_sql`" above.
 
 ## Known gaps / deliberately deferred (be honest, don't hide these)
-- No tests yet.
+- Tests: `get_current_time` (8), `custom_web_search` (11) and server-level
+  checks in `tests/test_server.py` (6) — 25 passing 2026-11-20. `text_to_sql`
+  and the Host/Origin guard are untested. `src/server.py` uses the default
+  `on_duplicate` (a repeated tool name only logs a warning); setting
+  `on_duplicate="error"` there is undecided.
 - No auth/security hardening on the Streamable HTTP server yet — first pass is
   about seeing MCP mechanics work, not production hardening. This now
   explicitly includes MCP's own DNS-rebinding `Host` header protection,
