@@ -1,6 +1,6 @@
 # Tools
 
-This server exposes three MCP tools over Streamable HTTP at `/mcp`. Each tool lives in its own file under `src/tools/` and registers itself on the shared `mcp` instance from `server.py` with `@mcp.tool()`. The SDK derives each tool's JSON schema from the function's type hints and its description from the docstring, so the code is the source of truth for the contract below. The server is a protocol adapter: it does not hold conversation state, call a model itself, or decide when a tool is used.
+This server exposes three MCP tools over Streamable HTTP at `/mcp`. Each tool lives in its own file under `src/tools/` as a plain typed function, with a `register(mcp)` function that calls `mcp.tool()` on it. `src/server.py` creates the shared `mcp` instance and `src/tools/__init__.py`'s `register_all` calls each module's `register`; the tool files do not import the server. The framework (`fastmcp`) derives each tool's JSON schema from the function's type hints and its description from the docstring, so the code is the source of truth for the contract below. The server is a protocol adapter: it does not hold conversation state, call a model itself, or decide when a tool is used.
 
 | Tool | File | External dependency |
 | --- | --- | --- |
@@ -10,7 +10,7 @@ This server exposes three MCP tools over Streamable HTTP at `/mcp`. Each tool li
 
 ## Error behavior
 
-A tool that raises an exception does not crash the server. The SDK catches it and returns a tool result with `is_error=True` and the exception message as text content, which the client passes to the model. Tools here raise `ValueError` for bad input or a domain failure so the message is readable by the model. Other exceptions (network failures, upstream errors) propagate unwrapped and are reported the same way, with whatever message the underlying library produced.
+A tool that raises an exception does not crash the server. The framework catches it and returns a tool error whose text is `Error calling tool '<name>': <exception message>`, which the client passes to the model. Tools here raise `ValueError` for bad input or a domain failure so the message is readable by the model. Other exceptions (network failures, upstream errors) propagate unwrapped and are reported the same way, with whatever message the underlying library produced. `mask_error_details` is not set, so exception messages are visible to the caller; this must be revisited before the server returns data from internal backends.
 
 ## `get_current_time`
 
@@ -31,7 +31,7 @@ Searches the web and returns up to five results as a numbered list of title, URL
 | `query` | `str` | required | The search query |
 | `provider` | `"duckduckgo"` or `"tavily"` | `"duckduckgo"` | Search backend |
 
-`provider` is a `Literal`, so the schema carries an enum and the SDK rejects any other value before the function body runs.
+`provider` is a `Literal`, so the schema carries an enum and the framework rejects any other value with a validation error before the function body runs.
 
 The tool description tells the calling model to prefer `duckduckgo`, which is free, and to use `tavily`, which is paid, only when a query needs more accurate or recent results or when a DuckDuckGo search came back empty or insufficient. The cost guidance lives in the docstring because that text is what the model sees.
 
@@ -70,4 +70,4 @@ How the tool reaches the pipeline is being changed. See [Server design](architec
 
 ## What is not covered
 
-There are no automated tests in this repository. The behavior above was read from the code and from the SDK's tool-error handling; the end-to-end behavior of each tool was exercised manually through client connections, not through a test suite. The tools perform no authentication and no per-caller authorization; see [Server design](architecture/server-design.md#known-gaps).
+There are no automated tests in this repository. The behavior above was read from the code and checked through an in-memory `fastmcp` client (tool listing, a successful call, an unknown-timezone error, an invalid `provider` value); the end-to-end behavior of each tool was exercised manually through client connections, not through a test suite. The tools perform no authentication and no per-caller authorization; see [Server design](architecture/server-design.md#known-gaps).

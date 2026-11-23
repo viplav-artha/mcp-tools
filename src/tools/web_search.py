@@ -5,8 +5,7 @@ from typing import Literal
 import httpx
 from ddgs import DDGS
 from dotenv import load_dotenv
-
-from server import mcp
+from fastmcp import FastMCP
 
 load_dotenv()
 
@@ -56,7 +55,6 @@ async def _search_duckduckgo(query: str) -> str:
     return await asyncio.to_thread(_search_duckduckgo_sync, query)
 
 
-@mcp.tool()
 async def custom_web_search(
     query: str, provider: Literal["duckduckgo", "tavily"] = "duckduckgo"
 ) -> str:
@@ -78,3 +76,7 @@ async def custom_web_search(
     if provider == "tavily":
         return await _search_tavily(query)
     return await _search_duckduckgo(query)
+
+
+def register(mcp: FastMCP) -> None:
+    mcp.tool()(custom_web_search)

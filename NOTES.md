@@ -36,7 +36,22 @@ graphs so the project's history and structure are visible at a glance.
 [10] tools/text_to_sql.py
      |
      v
-[11] pyproject.toml   <-- latest
+[11] pyproject.toml
+     |
+     v
+[12] src/tools/__init__.py
+     |
+     v
+[13] src/server.py   (merges [4] server.py and [8] main.py, both deleted)
+     |
+     v
+[14] tests/test_get_current_time.py
+     |
+     v
+[15] tests/test_web_search.py
+     |
+     v
+[16] tests/test_server.py   <-- latest
 ```
 
 ## Routes Graph (import / dependency connections)
@@ -53,18 +68,23 @@ labeled with *what* it imports.
 **The number in each node's label is its own sequence number within THIS
 graph only — it does NOT match the Timeline number for the same file.**
 
-`server.py` is Routes Graph node 1 (Timeline `[4]`). `tools/get_current_time.py`
-is Routes Graph node 2 (Timeline `[5]`) — it imports the shared `mcp` instance
-from `server.py` to register itself via `@mcp.tool()`. `tools/web_search.py`
-is Routes Graph node 3 (Timeline `[7]`) — same import, for the same reason.
-`main.py` is Routes Graph node 4 (Timeline `[8]`) — it imports `mcp` from
-`server.py` (to call `mcp.run(...)`) and imports all three tool modules
-(purely to trigger their registration side effect). `tools/text_to_sql.py`
-is Routes Graph node 5 (Timeline `[10]`) — imports `mcp` from `server.py`
-like the other two tools, plus `run_query`/`run_query_no_cache` from the
-externally-installed `rag-text-to-sql` package (not itself a node in this
-graph — it's a separate project's own codebase, not a file of this one,
-same reasoning as why `mcp`/`httpx`/`ddgs` aren't nodes here either).
+Since 2026-11-20 the root `server.py` and `main.py` are merged into
+`src/server.py`, which is Routes Graph node 1 (Timeline `[13]`). It imports
+`register_all` from `src/tools/__init__.py` (node 2, Timeline `[12]`), which
+imports the three tool modules — `src/tools/get_current_time.py` (node 3,
+Timeline `[5]`), `src/tools/web_search.py` (node 4, Timeline `[7]`) and
+`src/tools/text_to_sql.py` (node 5, Timeline `[10]`) — and calls each one's
+`register(mcp)`. Tool modules import nothing from `src/server.py`.
+`text_to_sql.py` additionally imports `run_query` from the externally-installed
+`rag-text-to-sql` package (not itself a node in this graph — it's a separate
+project's own codebase, same reasoning as why `fastmcp`/`httpx`/`ddgs` aren't
+nodes here either). `tests/test_get_current_time.py` is Routes Graph node 6
+(Timeline `[14]`): it imports `get_current_time` directly from node 3, without
+going through `src/server.py`. `tests/test_web_search.py` is node 7 (Timeline
+`[15]`): it imports `custom_web_search` and `TAVILY_SEARCH_URL` from node 4, and
+`mcp` from node 1 for its two protocol-level cases. `tests/test_server.py` is
+node 8 (Timeline `[16]`): it imports `mcp` from node 1 and `_MODULES` and
+`register_all` from node 2.
 
 Path note: `tools/` was moved to `src/tools/` on 2026-11-20 (with an empty
 `src/__init__.py`). The graph below uses the current paths; the Timeline and
@@ -72,18 +92,23 @@ File notes keep the paths from when each file was created.
 
 ```mermaid
 graph TD
-    n1["[1] server.py"]
-    n2["[2] src/tools/get_current_time.py"]
-    n3["[3] src/tools/web_search.py"]
-    n4["[4] main.py"]
+    n1["[1] src/server.py"]
+    n2["[2] src/tools/__init__.py"]
+    n3["[3] src/tools/get_current_time.py"]
+    n4["[4] src/tools/web_search.py"]
     n5["[5] src/tools/text_to_sql.py"]
-    n1 -->|mcp| n2
-    n1 -->|mcp| n3
-    n1 -->|mcp| n4
-    n1 -->|mcp| n5
-    n2 -.->|registration side effect| n4
-    n3 -.->|registration side effect| n4
-    n5 -.->|registration side effect| n4
+    n6["[6] tests/test_get_current_time.py"]
+    n7["[7] tests/test_web_search.py"]
+    n8["[8] tests/test_server.py"]
+    n3 -->|register| n2
+    n4 -->|register| n2
+    n5 -->|register| n2
+    n3 -->|get_current_time| n6
+    n4 -->|custom_web_search, TAVILY_SEARCH_URL| n7
+    n1 -->|mcp| n7
+    n1 -->|mcp| n8
+    n2 -->|_MODULES, register_all| n8
+    n2 -->|register_all| n1
 ```
 
 ## File notes
@@ -282,3 +307,114 @@ chat and in CLAUDE.md, not here).
   tool files' `from server import mcp` does not change; `pyproject.toml`
   lists `src` and `src.tools` as packages. No new graph node: the edges are
   unchanged.
+
+### Restructure: `register(mcp)` pattern (2026-11-20)
+- Motive: remove registration by import side effect and the circular-import
+  constraint that forced the instance into its own file. A tool not imported
+  by `main.py` was silently not registered.
+- Logic: each tool module defines its function as a plain module-level
+  function and a `register(mcp: MCPServer)` that calls `mcp.tool()(fn)`. No
+  tool module imports `server.py`. `server.py` creates `mcp = MCPServer("tools")`
+  and calls `get_current_time.register(mcp)`, `web_search.register(mcp)` and
+  `text_to_sql.register(mcp)`. `main.py` only imports `mcp` from `server.py`.
+  Tool functions can be imported and called directly, because `mcp.tool()`
+  returns the original function. Routes Graph edges updated: tool modules
+  now point to `server.py`, and `main.py` no longer imports them.
+
+### Framework switch: `mcp` SDK to `fastmcp` (2026-11-20)
+- Motive: the server is to be production-grade for individual users (Keycloak
+  sign-in, per-tool permission tiers, 100+ tools). `fastmcp` provides auth
+  providers, per-tool auth and middleware; the official SDK's `MCPServer` did
+  not expose per-tool scope checks or a Keycloak provider in the methods
+  inspected.
+- Logic: `server.py` now creates `FastMCP(name="tools")`. The tool modules'
+  `register` functions take a `FastMCP`. `main.py` calls `mcp.http_app(path=
+  "/mcp", middleware=[Middleware(CORSMiddleware, ...)], host_origin_protection=
+  True, allowed_hosts=MCP_ALLOWED_HOSTS, allowed_origins=CORS_ALLOWED_ORIGINS)`
+  and passes the result to `uvicorn.run`, replacing `streamable_http_app()` plus
+  `TransportSecuritySettings(enable_dns_rebinding_protection=False)`. The
+  guard had to be enabled explicitly: with the default, a foreign `Host` was
+  accepted. Routes Graph unchanged: the same files import each other; only
+  the imported library changed. `pyproject.toml` and `requirements.txt` were
+  updated for the new dependency.
+
+### [12] src/tools/__init__.py
+- Motive: with the `register(mcp)` pattern the list of tool modules needs one
+  home. Keeping it here keeps the entry file small as the number of tools grows.
+- Logic: imports each tool module and holds them in `_MODULES`. `register_all(mcp:
+  FastMCP)` calls each module's `register(mcp)`. A module that is not listed in
+  `_MODULES` is not registered; the check that every module on disk is listed
+  was done manually on 2026-11-20 (no automated test yet).
+
+### [13] src/server.py
+- Motive: one entry point, as in `artha-mcp`. The root `server.py` existed only
+  to avoid a circular import between `main.py` and the tool files; after the
+  `register(mcp)` change that reason no longer applied, so `server.py` and
+  `main.py` were merged and both root files deleted.
+- Logic: loads `.env`, creates `mcp = FastMCP(name="tools")`, calls
+  `register_all(mcp)`. `main()` reads `HOST`/`PORT`, `CORS_ALLOWED_ORIGINS` and
+  `MCP_ALLOWED_HOSTS`, builds the app with `mcp.http_app(path="/mcp",
+  middleware=[CORS], host_origin_protection=True, allowed_hosts=,
+  allowed_origins=)` and runs it with `uvicorn.run`, passing `TLS_CERT_FILE` /
+  `TLS_KEY_FILE` when set. Run with `python -m src.server` or the `mcp-tools`
+  console script declared in `pyproject.toml`. Verified 2026-11-20: tool list,
+  one call, and the Host/Origin results (421 foreign Host, 403 foreign Origin).
+  Entries [4] and [8] above describe the earlier two-file layout.
+
+### [14] tests/test_get_current_time.py
+- Motive: first automated test, for the simplest tool. Re-checking behavior by
+  hand after each refactor does not scale to 100+ tools; a test run does it in
+  about a second. Tool functions are plain module-level functions, so they can
+  be called directly without a server or network.
+- Logic: eight cases. Default argument gives `UTC (+0000)`. Output matches a
+  regular expression for the documented format. `Asia/Kolkata` ends with `IST
+  (+0530)` (no daylight saving, so the value is stable all year). The returned
+  time is within 5 seconds of the real UTC clock. An unknown zone raises
+  `ValueError` whose message contains the bad name. Three malformed names
+  (`""`, `"../etc/passwd"`, `" UTC"`) raise `ValueError`, checked by type only
+  because the first two messages come from `zoneinfo`. Exact assertions are
+  avoided where the value depends on the date (daylight-saving zones) or on the
+  host (lowercase zone names work on a case-insensitive file system only).
+  `pytest-asyncio` runs the `async def` tests via `asyncio_mode = "auto"`. The
+  suite was verified to fail when the function is broken (default zone changed,
+  and unknown zone no longer raising). Importing the tool also imports
+  `src/tools/__init__.py`, which loads the text-to-SQL pipeline.
+
+### [15] tests/test_web_search.py
+- Motive: `custom_web_search` calls external services, which a unit test must
+  not reach (slow, flaky, and Tavily is paid). The tests replace those services
+  with fakes and check only this project's own logic around them.
+- Logic: three fixtures. `no_real_network` (autouse) makes any real
+  DuckDuckGo or `httpx` client construction raise and sets a dummy
+  `TAVILY_API_KEY`, because `load_dotenv()` runs at import and would otherwise
+  leave the developer's real key in the environment. `fake_ddgs` replaces
+  `DDGS` with a class returning given results and recording its arguments.
+  `fake_tavily` replaces `httpx.AsyncClient` with a real client over an
+  `httpx.MockTransport` and records the requests. Eleven cases: DuckDuckGo
+  formatting, default provider, requested count of 5, empty result; Tavily
+  formatting, request method/URL/bearer header/JSON body, empty result, missing
+  key raising `ValueError` before any request, HTTP 500 propagating as
+  `httpx.HTTPStatusError` (current behavior). Two cases use `fastmcp.Client(mcp)`
+  because calling the function directly skips argument validation: an invalid
+  `provider` is rejected and no search happens, and the schema shows the enum,
+  the default and the required `query`. `Tool.input_schema` is used because
+  `inputSchema` is deprecated. Verified by breaking the tool four ways (default
+  provider, key check removed, result count, header format) and adding a test
+  that forgets a fake; each failed as expected, then everything was restored.
+
+### [16] tests/test_server.py
+- Motive: the per-tool tests cannot notice server-level mistakes: a tool module
+  that exists but is not listed in `_MODULES` is silently not registered, a
+  broken import in the entry-point chain, or two modules registering the same
+  tool name. These tests check the assembled server.
+- Logic: six cases. `src.server` imports and its name is `tools`. The registered
+  names, read through `fastmcp.Client(mcp)`, equal the set of public functions defined in every module file under `src/tools/` (discovered with `pkgutil` and `inspect`, not typed by hand, so adding a tool needs no test edit; helpers must start with an underscore).
+  The module names found on disk with `pkgutil.iter_modules` equal the names in
+  `_MODULES`. Each listed module has a callable `register`. A fresh
+  `FastMCP(name="strict", on_duplicate="error")` accepts `register_all` without
+  raising, which fails if two tools share a name (the production server uses
+  the default, which only logs a warning on a duplicate). Every tool has a
+  non-empty description and an input schema of type object. Verified by
+  removing a module from `_MODULES`, adding an unlisted module file, listing a
+  module twice and removing a docstring; the matching tests failed each time,
+  and everything was restored.
